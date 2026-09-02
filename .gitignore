@@ -1,0 +1,13 @@
+.DS_Store
+.claude
+__pycache__
+test/
+*irasutoya*
+01-compact-columns
+02-stripe
+03-finder-tags
+04-date-gradient
+05-image-files
+quote
+test
+setup_demo.py
