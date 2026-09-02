@@ -16,10 +16,7 @@ kept in sync with (man-page style, every option and color rule).
 
 - Syntax/compile check (closest thing to a build step): `python3 -m py_compile macls.py`
 - Run it directly: `./macls.py [options] [path...]` (or `python3 macls.py ...`)
-- There is no automated test suite. `test/` is a fixture directory of
-  oddly-named files (leading `~`/`#`, embedded `'`, shell metacharacters,
-  spaces) used for manually exercising `--quote`/quoting behavior — inspect
-  by running macls.py against it, e.g. `./macls.py --quote -1 test/`.
+- There is no automated test suite.
 - To verify a change manually, create files/dirs with `touch`/`mkdir`, and to
   test Finder tag behavior, write the `com.apple.metadata:_kMDItemUserTags`
   xattr directly via Python's `plistlib`/`xattr` command (see any recent
