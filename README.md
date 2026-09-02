@@ -151,3 +151,7 @@ delegated to the system `ls(1)`, so they never drift from real `ls`
 behavior. Everything else — Finder tag lookup, recency colors, display
 width, multi-column layout — runs in pure Python 3 with no external
 processes or third-party packages.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
