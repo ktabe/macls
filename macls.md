@@ -51,7 +51,10 @@ is taken as a path argument.
 These options have no equivalent in the standard macOS `ls(1)`.
 
 **`-I`**
-Display a thumbnail of image files to the left of the name, using
+Display a thumbnail of image files, and of Word/Excel/PowerPoint
+documents (modern `.docx`/`.xlsx`/`.pptx` or legacy `.doc`/`.xls`/`.ppt`
+— an actual rendered first-page/sheet/slide preview via macOS's Quick
+Look, not a generic icon), to the left of the name, using
 iTerm2's inline image protocol (OSC 1337). Ignored outside iTerm2, or
 when standard output is not a terminal. The thumbnail's width is fixed
 (see `--scale`); for PNG/GIF/BMP/JPEG, its height is instead computed

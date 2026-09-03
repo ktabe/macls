@@ -39,11 +39,15 @@ DESCRIPTION
     The following options are macls.py extensions with no equivalent
     in the standard macOS ls(1):
 
-    -I          Display a thumbnail of image files to the left of the
-                name, using iTerm2's inline image protocol (OSC 1337).
-                Ignored outside iTerm2, or when standard output is not a
-                terminal. The thumbnail's width is fixed (see --scale);
-                for PNG/GIF/BMP/JPEG (the formats whose pixel dimensions
+    -I          Display a thumbnail of image files (and, via macOS's
+                Quick Look, Word/Excel/PowerPoint documents --
+                .docx/.xlsx/.pptx and the legacy .doc/.xls/.ppt -- an
+                actual rendered first-page/sheet/slide preview, not a
+                generic icon) to the left of the name, using iTerm2's
+                inline image protocol (OSC 1337). Ignored outside
+                iTerm2, or when standard output is not a terminal. The
+                thumbnail's width is fixed (see --scale); for
+                PNG/GIF/BMP/JPEG (the formats whose pixel dimensions
                 can be read with a small amount of standard-library-only
                 header parsing -- see get_image_pixel_size()), its
                 height is instead computed from that image's own real
@@ -490,6 +494,21 @@ IMPLEMENTATION NOTES
     display, see SIPS_TARGET_PX_PER_CELL) fixes that. No dependency is
     added: sips ships with macOS itself. See _sips_shrink_image().
 
+    -I also thumbnails Word/Excel/PowerPoint documents, both the modern
+    Office Open XML formats and the legacy binary ones (see
+    QL_EXTENSIONS), via qlmanage(1), the CLI for macOS's built-in
+    Quick Look -- the same generator Finder itself uses, so these get
+    an actual rendered first-page/sheet/slide preview rather than a
+    generic file icon. There's no original-file-bytes fallback for
+    these (an OSC 1337 client can't render a .docx directly), so any
+    failure just means no thumbnail for that entry. A "~$name.docx"-
+    style lock file left behind while the real document is open
+    elsewhere is excluded up front, in build_image_prefix() itself,
+    rather than being handed to qlmanage: it isn't actually a valid
+    document (just a small owner-info stub with the same extension),
+    and qlmanage has been observed to hang on one well past its own
+    timeout. See _qlmanage_thumbnail().
+
     sips's own process-startup/framework-load cost (~200ms, confirmed
     against a real invocation, and largely independent of the image's
     own size) would still add up linearly across a directory of many
@@ -520,6 +539,7 @@ import ctypes
 import locale
 import os
 import plistlib
+import shutil
 import stat as stat_module
 import struct
 import subprocess
@@ -581,6 +601,21 @@ IMAGE_EXTENSIONS = {
     ".tiff", ".tif", ".webp", ".heic", ".heif",
     ".pdf"
 }
+
+# -I extensions whose thumbnail comes from macOS's Quick Look (via
+# qlmanage(1) -- see _qlmanage_thumbnail()) rather than being read
+# directly: unlike IMAGE_EXTENSIONS, these aren't image files
+# themselves, so there's no raw bytes to fall back to sending if
+# thumbnail generation fails. Currently just Word/Excel/PowerPoint
+# documents, both the modern XML-based Office Open XML formats and the
+# legacy binary ones (confirmed against real .xls/.ppt files to render
+# an actual first-page/sheet/slide preview, same as the XML formats do,
+# out of the box with no Office installation needed, via macOS's own
+# Preview.app/QuickLook generators) -- but Quick Look itself isn't
+# limited to Office documents, so this is named/kept separate from any
+# one file family: any other extension with a real (non-generic-icon)
+# Quick Look generator is a candidate to add here later.
+QL_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
 
 # build_image_prefix() only bothers shelling out to sips(1) to shrink a
 # source image before base64-encoding/transmitting it once the file is
@@ -1351,6 +1386,48 @@ def _sips_shrink_image(data, ext, max_px):
                 pass
 
 
+def _qlmanage_thumbnail(path, max_px):
+    """Best-effort thumbnail for a QL_EXTENSIONS file via macOS's
+    built-in Quick Look, shelled out to via qlmanage(1) -- the same
+    generator Finder itself uses to preview/icon these files. For the
+    Word/Excel/PowerPoint documents QL_EXTENSIONS currently lists --
+    modern (.docx/.xlsx/.pptx) or legacy (.doc/.xls/.ppt) -- that means
+    an actual rendered first-page/sheet/slide preview rather than a
+    generic file icon. Returns the result
+    re-encoded as JPEG (via _sips_shrink_image(), reusing the same
+    shrink-to-max_px/JPEG-quality logic used for an oversized source
+    image), or None on any failure (qlmanage missing, no Quick Look
+    generator for this file, a timeout, ...) -- unlike an oversized
+    source image, there's no original-file-bytes fallback that would
+    make sense to send instead of a thumbnail here, so the caller shows
+    no thumbnail at all for this entry in that case.
+
+    qlmanage only writes into a directory (-o), naming its output
+    "<original filename>.png" inside it, so this uses a dedicated
+    temporary directory per call to avoid collisions with any other
+    concurrent call (see _build_images_parallel()/
+    _stream_image_suffixes()) and removes it before returning.
+    """
+    tmp_dir = None
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="macls-ql-")
+        result = subprocess.run(
+            ["qlmanage", "-t", "-s", str(max_px), "-o", tmp_dir, path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        out_path = os.path.join(tmp_dir, os.path.basename(path) + ".png")
+        with open(out_path, "rb") as f:
+            png_data = f.read()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    return _sips_shrink_image(png_data, ".png", max_px)
+
+
 def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_sips=False, allow_taller=True):
     """Returns the escape sequence that renders the image at path as a
     thumbnail of `width` cells wide using iTerm2's inline image
@@ -1397,27 +1474,50 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_
     reserved for it there -- self-positioning, using only the image's
     own declared width, without needing its height at all.
 
-    Returns "" if the file isn't an image or can't be read (the caller
-    is expected to have already checked preconditions like
+    Returns "" if the file isn't an image or Office document (see
+    QL_EXTENSIONS), or can't be read/previewed (the caller is
+    expected to have already checked preconditions like
     iterm2_supported()).
     """
     ext = os.path.splitext(path)[1].lower()
-    if ext not in IMAGE_EXTENSIONS:
-        return ""
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return ""
-    if not data:
+    # A "~$name.docx"-style lock file Word/Excel/PowerPoint leaves next
+    # to a document while it's open elsewhere isn't actually an Office
+    # Open XML package (just a small owner-info stub with the same
+    # extension) -- qlmanage has been observed to hang well past its
+    # own timeout trying to preview one, so these are excluded from
+    # is_ql entirely rather than left to fail slowly.
+    is_ql = ext in QL_EXTENSIONS and not os.path.basename(path).startswith("~$")
+    if ext not in IMAGE_EXTENSIONS and not is_ql:
         return ""
 
-    if not no_sips and len(data) > SIPS_RESIZE_THRESHOLD_BYTES and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
-        max_px = max(SIPS_TARGET_PX_MIN, width * SIPS_TARGET_PX_PER_CELL)
-        shrunk = _sips_shrink_image(data, ext, max_px)
-        if shrunk:
-            data = shrunk
-            ext = ".jpg"
+    max_px = max(SIPS_TARGET_PX_MIN, width * SIPS_TARGET_PX_PER_CELL)
+
+    if is_ql:
+        # No "send the original file" fallback makes sense here (an
+        # OSC 1337 client can't render a .docx), so --no-sips -- which
+        # exists to compare against not shrinking an image at all --
+        # just disables Office thumbnails outright instead, and any
+        # qlmanage/sips failure means no thumbnail for this entry.
+        if no_sips:
+            return ""
+        data = _qlmanage_thumbnail(path, max_px)
+        if not data:
+            return ""
+        ext = ".jpg"
+    else:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return ""
+        if not data:
+            return ""
+
+        if not no_sips and len(data) > SIPS_RESIZE_THRESHOLD_BYTES and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
+            shrunk = _sips_shrink_image(data, ext, max_px)
+            if shrunk:
+                data = shrunk
+                ext = ".jpg"
 
     pixel_size = get_image_pixel_size(data, ext)
     if pixel_size:
