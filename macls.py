@@ -755,7 +755,7 @@ FG_FAMILY_FOR_BG = {
 NO_BG_FG_FAMILY = "magenta"
 
 PROG = "macls.py"
-VERSION = "1.00"
+VERSION = "1.0.0"
 
 
 def finder_color_code(num):
