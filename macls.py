@@ -238,10 +238,10 @@ DESCRIPTION
                 Selects the color of the -F type indicator (/ @ * = |)
                 appended to an entry. mode is one of:
 
-                match   The indicator takes on the same color as the
+                off     The indicator takes on the same color as the
                         entry's name (foreground gradient, and any
-                        Finder tag or stripe background). This is the
-                        default behavior.
+                        Finder tag or stripe background), i.e. no color
+                        of its own. This is the default behavior.
                 type    The indicator instead gets its own foreground
                         color keyed by which character it is (see
                         SUFFIX_TYPE_SGR), matching /bin/ls -G's default
@@ -254,7 +254,7 @@ DESCRIPTION
                         its own color either way.
 
                 Omitting mode (bare "--suffix-color") is equivalent to
-                "--suffix-color=match". Has no effect without -F.
+                "--suffix-color=off". Has no effect without -F.
 
     --fg-mode=mode
                 Selects whether a name's own foreground color is set
@@ -1403,7 +1403,7 @@ def build_tag_label(all_tags, use_color, use_truecolor, tag_colors, bg_part=None
     return colored_label, display_width(plain_label)
 
 
-def build_colored_name(name, mtime, now, use_color, bold, suffix, theme, use_truecolor, tag_colors, bg_num, dot_tagnums, stripe=False, stripe_col=None, suffix_color="match", fg_mode="date", base_fg=None):
+def build_colored_name(name, mtime, now, use_color, bold, suffix, theme, use_truecolor, tag_colors, bg_num, dot_tagnums, stripe=False, stripe_col=None, suffix_color="off", fg_mode="date", base_fg=None):
     """Builds the colored display for name.
     foreground: a gradient color based on recency of modification
     (date_color_rgb), using the dark- or light-background stops per
@@ -1438,8 +1438,8 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, theme, use_tru
     SGR sequences (see fg_sgr()/finder_sgr()). tag_colors ("vivid" or
     "pastel") selects the Finder tag color palette in truecolor mode
     (see --tag-colors).
-    suffix_color ("match" or "type", see --suffix-color) controls
-    suffix's own color: "match" (the default) leaves it inside name's
+    suffix_color ("off" or "type", see --suffix-color) controls
+    suffix's own color: "off" (the default) leaves it inside name's
     SGR span, so it takes on the same color as the name (the recency
     gradient, or a Finder tag/stripe background). "type" instead gives
     it its own foreground color keyed by which character it is (see
@@ -2175,7 +2175,7 @@ class Options:
     tag_colors: str = "pastel"
     columns: str = "compact"
     tag: str = "bg"
-    suffix_color: str = "match"
+    suffix_color: str = "off"
     fg_mode: str = "date"
     base_fg: Optional[tuple] = None
     scale: int = 1
@@ -2801,7 +2801,7 @@ Options:
             column), or every odd row's whole line in -1/-l.
   --suffix-color=mode
             Select the color of the -F type indicator (/ @ * = |)
-            (match/type). match (the default) colors it the same as
+            (off/type). off (the default) colors it the same as
             the entry's name. type instead colors it by which
             character it is, matching /bin/ls -G's default per-type
             colors (/ blue, @ magenta, = green, | yellow, * red).
@@ -2886,7 +2886,7 @@ MODE_OPTIONS = (
     ("--tag-colors", "tag_colors", "pastel", ("vivid", "pastel")),
     ("--columns", "columns", "compact", ("compact", "classic")),
     ("--tag", "tag", "bg", ("bg", "dot", "str", "off")),
-    ("--suffix-color", "suffix_color", "match", ("match", "type")),
+    ("--suffix-color", "suffix_color", "off", ("off", "type")),
     ("--fg-mode", "fg_mode", "date", ("date", "off")),
 )
 

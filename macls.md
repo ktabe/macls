@@ -167,11 +167,11 @@ an entry.
 
 | `mode` | Behavior |
 |---|---|
-| `match` (default) | The indicator takes on the same color as the entry's name (foreground gradient, and any Finder tag or stripe background). |
+| `off` (default) | The indicator takes on the same color as the entry's name (foreground gradient, and any Finder tag or stripe background), i.e. no color of its own. |
 | `type` | The indicator gets its own foreground color keyed by which character it is, matching `/bin/ls -G`'s default `LSCOLORS` for that file type: `/` (directory) blue, `@` (symlink) magenta, `=` (socket) green, `\|` (pipe) yellow, `*` (executable) red. Always the plain ANSI 8-color codes, regardless of `--color`/`--tag-colors` or light/dark background. |
 
 Omitting `mode` (bare `--suffix-color`) is equivalent to
-`--suffix-color=match`. Has no effect without `-F`.
+`--suffix-color=off`. Has no effect without `-F`.
 
 **`--fg-mode=mode`**
 Selects whether a name's own foreground color is set from its recency
