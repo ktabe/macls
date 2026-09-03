@@ -2,13 +2,11 @@
 
 外部依存のない単一ファイルのPython 3スクリプトで、macOSの `ls` をそのまま置き換えられるカラー表示版です。
 
-English version: see [README.md](README.md).
-
-このプログラムの大部分は [Claude Code](https://claude.com/claude-code) によって書かれました。
+English version: [README.md](README.md).
 
 ## 特徴
 
-### 🎨 更新日時のグラデーション
+### 更新日時のグラデーション
 
 標準の `ls` はファイルの種類でファイル名を色分けしますが、*macls.py* は実際に最近変更されたかどうかで色分けします: 名前の**前景色**が更新日時の新しさに応じたグラデーションでフェードします(触ったばかりのファイルは明るく、何ヶ月も開いていないファイルは暗く)。
 
@@ -18,7 +16,7 @@ English version: see [README.md](README.md).
 
 すべての名前は「5分 / 30分 / 1時間 / 2時間 / 1日 / 1週間 / 1ヶ月 / それ以上」という更新日時の新しさで色分けされるので、`-t` を使ったりタイムスタンプを頭の中で比較したりしなくても、今まさに編集中のファイルが一目でわかります。
 
-### 🏷️ Finder タグを背景色に
+### Finder タグを背景色に
 
 Finderでファイルにタグを付けると、ターミナルにもそれが反映されます:
 
@@ -30,7 +28,7 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
   <img src="docs/screenshots/macls-tags.png" alt="Finder-tagged files shown with their tag color as background" width="360">
 </p>
 
-### 📐 崩れないコンパクトな複数列表示
+### 崩れないコンパクトな複数列表示
 
 通常の `ls -C` は、一覧内で最も長い1つの名前に合わせて全列の幅を揃えるため、長いファイル名が1つあるだけで表示全体が1列に近いところまで崩れてしまいます。*macls.py* の既定である `--columns=compact` では、長いファイル名は自分の分だけ複数の列スロットにまたがらせ、残りの列は詰めたまま保ちます。
 
@@ -38,7 +36,7 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
 |---|---|
 | <img src="docs/screenshots/macls-classic.png" alt="classic column layout collapsing to one column because of a long filename" width="330"> | <img src="docs/screenshots/macls-compact.png" alt="compact column layout keeping two columns despite the long filename" width="330"> |
 
-### 🦓 縞模様の列
+### 縞模様の列
 
 `--stripe` は列(`-l`/`-1` では行)を交互に色分けし、横に広い一覧でも1行ずつ追いやすくします。`--columns=compact` のレイアウトにも対応しており、複数の列スロットにまたがるエントリでも、開始位置の列を基準に1つの帯として縞模様が付きます。
 
@@ -47,7 +45,7 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
 </p>
 
 
-### 🖼️ インライン画像サムネイル(iTerm2)
+### インライン画像サムネイル(iTerm2)
 
 `-I` を指定すると、画像ファイル(`.png`、`.jpeg`、`.pdf` など)の名前の横に、iTerm2のインライン画像プロトコルを使ってサムネイルが表示されます。`open` や別のビューアーは不要です。
 
@@ -57,13 +55,13 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
   <img src="docs/screenshots/macls-images.png" alt="Alternating column stripe background" width="520">
 </p>
 
-### 🔗 クリック可能なファイル名
+### クリック可能なファイル名
 
 *macls.py* が表示するすべてのファイル名は、その `file://` URLへのハイパーリンクになっています。Cmdクリックで Finder から開けます(iTerm2のみ)。
 
 iTerm2では、ハイパーリンクであることを示す下線付きでファイル名が表示されます。この下線はiTerm2の設定(Settings > Advanced > Underline OSC 8 hyperlinks)でオフにできます。
 
-### 🔣 末尾記号の色付け
+### 末尾記号の色付け
 
 `--suffix-color=type` は、`-F` 指定時に付く `/ @ * = |` の種別記号をファイル種別ごとの色で表示します。
 
@@ -71,7 +69,7 @@ iTerm2では、ハイパーリンクであることを示す下線付きでフ�
   <img src="docs/screenshots/macls-suffix-color.png" alt="Suffix coloring" width="520">
 </p>
 
-### 💬 クォート表示
+### クォート表示
 
 `--quote` は、スペースやシェルの特殊文字を含む名前をシェルセーフなクォートで囲んで表示するので、一覧をそのままコマンドラインに貼り付けられます。
 
@@ -79,7 +77,7 @@ iTerm2では、ハイパーリンクであることを示す下線付きでフ�
   <img src="docs/screenshots/macls-quotes.png" alt="Quote filenames" width="520">
 </p>
 
-### 🚀 導入も簡単
+### 導入も簡単
 
 *macls.py* は単一のPythonファイルとして実装されています。外部モジュールもコンパイルも不要です。`macls.py` を `PATH` の通ったディレクトリに置くだけで動きます。
 
@@ -122,6 +120,11 @@ alias ls='/path/to/macls.py -BF --stripe --suffix-color=type --fg-mode=date --ta
 ## しくみ
 
 ディレクトリの列挙・ソートと `-l` のロング形式出力は、システムの `ls(1)` に委譲しているため、実際の `ls` の挙動から乖離しません。それ以外——Finderタグの取得、更新日時による色付け、表示幅計算、複数列レイアウト——はすべて外部プロセスやサードパーティ製パッケージなしの純粋なPython 3で実装されています。
+
+## 謝辞
+
+このプログラムの大部分は [Claude Code](https://claude.com/claude-code) によって書かれました。
+
 
 ## ライセンス
 

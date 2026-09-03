@@ -3,13 +3,11 @@
 A dependency-free, single-file Python 3 script that's a drop-in colorized
 replacement for macOS's `ls`.
 
-日本語版は [README-ja.md](README-ja.md) を参照してください.
-
-Most of this program was written by [Claude Code](https://claude.com/claude-code).
+Japanese/日本語版: [README-ja.md](README-ja.md)
 
 ## Features
 
-### 🎨 Modification-time gradient
+### Modification-time gradient
 
 Where standard `ls` colors filenames by file type, *macls.py* colors them by
 what actually changed recently: a name's **foreground** fades along a
@@ -25,7 +23,7 @@ Every name is colored by how recently it changed — 5 min / 30 min /
 mid-edit on jumps out at a glance, with no need for `-t` or a mental
 timestamp comparison.
 
-### 🏷️ Finder tags as background color
+### Finder tags as background color
 
 Tag a file in Finder, see it in the terminal:
 
@@ -42,7 +40,7 @@ Tag a file in Finder, see it in the terminal:
   <img src="docs/screenshots/macls-tags.png" alt="Finder-tagged files shown with their tag color as background" width="360">
 </p>
 
-### 📐 Compact columns that don't collapse
+### Compact columns that don't collapse
 
 Conventional `ls -C` sizes every column to the single longest name in the
 listing — one long filename and the whole grid degrades toward one
@@ -52,7 +50,7 @@ column. *macls.py*'s default `--columns=compact` instead lets a longer filename 
 |---|---|
 | <img src="docs/screenshots/macls-classic.png" alt="classic column layout collapsing to one column because of a long filename" width="330"> | <img src="docs/screenshots/macls-compact.png" alt="compact column layout keeping two columns despite the long filename" width="330"> |
 
-### 🦓 Striped columns
+### Striped columns
 
 `--stripe` tints alternating columns (or rows, in `-l`/`-1`) so a wide
 listing stays easy to scan line-by-line. It accounts for the
@@ -64,7 +62,7 @@ still stripes as a single band, based on the column it starts in.
 </p>
 
 
-### 🖼️ Inline image thumbnails (iTerm2)
+### Inline image thumbnails (iTerm2)
 
 With `-I`, image files (such as `.png`, `.jpeg`, and `.pdf`) show a
 thumbnail next to their name using iTerm2's inline image protocol — no
@@ -77,13 +75,13 @@ takes effect with `-1` or `-l` — multi-column output ignores it.
   <img src="docs/screenshots/macls-images.png" alt="Alternating column stripe background" width="520">
 </p>
 
-### 🔗 Clickable filenames
+### Clickable filenames
 
 Every filename shown by *macls.py* is a hyperlink to its `file://` URL. You can Cmd-click to open it in Finder (iTerm2 only).
 
 On iTerm2, filenames are shown with an underline to indicate a hyperlink. You can disable underlining in iTerm2 settings (Settings > Advanced > Underline OSC 8 hyperlinks to off).
 
-### 🔣 Suffix coloring
+### Suffix coloring
 
 `--suffix-color=type` colors `-F`'s `/ @ * = |` indicators by file type.
 
@@ -91,7 +89,7 @@ On iTerm2, filenames are shown with an underline to indicate a hyperlink. You ca
   <img src="docs/screenshots/macls-suffix-color.png" alt="Suffix coloring" width="520">
 </p>
 
-### 💬 Quoting
+### Quoting
 
 `--quote` wraps names containing spaces or
 shell meta-characters in shell-safe quotes, so a listing can be pasted
@@ -101,7 +99,7 @@ straight back into a command line.
   <img src="docs/screenshots/macls-quotes.png" alt="Quote filenames" width="520">
 </p>
 
-### 🚀 Easy to deploy
+### Easy to deploy
 
 *macls.py* is implemented in a single Python file.
 No external module or compilation is required.
@@ -151,6 +149,11 @@ delegated to the system `ls(1)`, so they never drift from real `ls`
 behavior. Everything else — Finder tag lookup, recency colors, display
 width, multi-column layout — runs in pure Python 3 with no external
 processes or third-party packages.
+
+## Acknowledgments
+
+Most of this program was written by [Claude Code](https://claude.com/claude-code).
+
 
 ## License
 
