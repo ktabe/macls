@@ -475,10 +475,47 @@ IMPLEMENTATION NOTES
 
     macOS's Python lacks os.getxattr, so ctypes is used to call libc's
     getxattr(2) directly from the standard library. No external process
-    is launched per entry, including for Finder tag retrieval.
+    is launched per entry, including for Finder tag retrieval -- except
+    for -I's own thumbnails (see below).
+
+    -I shrinks a source image with the sips(1) command before
+    base64-encoding/transmitting it, but only once the file is above
+    SIPS_RESIZE_THRESHOLD_BYTES: below that, reading and encoding it
+    as-is is already fast, and sips's own process-startup cost would be
+    the larger expense, not a win. Above it -- a multi-megapixel photo,
+    a scanned PDF, an iPhone HEIC -- what's actually slow is
+    base64-encoding and transmitting the full-resolution original just
+    for iTerm2 to downscale it on arrival, so shrinking it locally
+    first (to a size still generous enough to stay sharp on a HiDPI
+    display, see SIPS_TARGET_PX_PER_CELL) fixes that. No dependency is
+    added: sips ships with macOS itself. See _sips_shrink_image().
+
+    sips's own process-startup/framework-load cost (~200ms, confirmed
+    against a real invocation, and largely independent of the image's
+    own size) would still add up linearly across a directory of many
+    large images if paid serially, so _build_image_prefixes() runs
+    build_image_prefix() for a directory's images concurrently on a
+    thread pool (see _build_images_parallel()) rather than one at a
+    time -- safe since each entry's own thumbnail is independent of
+    every other's, and worthwhile since that ~200ms is spent waiting on
+    the external sips process, not on the GIL.
+
+    In -1/-l specifically (one entry per physical line, unlike
+    multi-column output, where several entries share a line and the
+    whole grid's layout has to be known before any of it can be
+    printed), list_target() goes a step further and streams: each
+    entry's own text is built and ready immediately (an entry's
+    img_prefix there is always the same fixed-width blank pad,
+    independent of whether that entry even has a thumbnail), so rather
+    than collecting the whole directory's thumbnails into a list before
+    printing any of it, each line is written as soon as its own
+    thumbnail (if it has one) is ready -- see _stream_image_suffixes().
+    A directory of many large images no longer has to sit through every
+    other entry's sips call before its first line appears.
 """
 
 import base64
+import concurrent.futures
 import ctypes
 import locale
 import os
@@ -487,6 +524,7 @@ import stat as stat_module
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import unicodedata
@@ -543,6 +581,38 @@ IMAGE_EXTENSIONS = {
     ".tiff", ".tif", ".webp", ".heic", ".heif",
     ".pdf"
 }
+
+# build_image_prefix() only bothers shelling out to sips(1) to shrink a
+# source image before base64-encoding/transmitting it once the file is
+# at least this big -- below this, reading+encoding the file as-is is
+# already fast enough that sips's own process-startup overhead would be
+# the larger cost, not a win. Above it (a multi-megapixel photo, a
+# scanned PDF, etc.), what's actually slow is base64-encoding and
+# transmitting the *original* full-resolution file to the terminal only
+# for iTerm2 to downscale it there -- shrinking it locally first fixes
+# that.
+SIPS_RESIZE_THRESHOLD_BYTES = 512 * 1024
+
+# Extensions build_image_prefix() never tries to shrink via sips even
+# above SIPS_RESIZE_THRESHOLD_BYTES: sips flattens an animated GIF to
+# its first frame, which would silently kill iTerm2's own inline
+# playback of an animated thumbnail.
+SIPS_RESIZE_SKIP_EXTENSIONS = {".gif"}
+
+# Rough pixels-per-cell estimate used to size the sips resize target
+# (see _sips_shrink_image()) from a thumbnail's width in terminal
+# cells: generous enough to stay sharp on a HiDPI display at any
+# --scale, while still shrinking a multi-megapixel source by an order
+# of magnitude or more.
+SIPS_TARGET_PX_PER_CELL = 60
+SIPS_TARGET_PX_MIN = 256
+
+# JPEG quality (sips -s formatOptions) for _sips_shrink_image()'s
+# output -- a thumbnail only a couple hundred pixels across doesn't
+# need print-quality encoding, so this trades a bit more compression
+# artifacting (invisible at that size) for a smaller payload than a
+# higher setting would give.
+SIPS_JPEG_QUALITY = 80
 
 # Finder tag color number (1-7) -> ANSI 256-color palette number (raw
 # value shared by fg/bg)
@@ -1224,10 +1294,84 @@ def get_image_pixel_size(data, ext):
 CELL_ASPECT_RATIO = 2.0
 
 
-def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT):
+def _sips_shrink_image(data, ext, max_px):
+    """Best-effort shrink of image file contents data (extension ext)
+    to at most max_px on its longest side, by shelling out to macOS's
+    built-in sips(1) -- returns the shrunk file's bytes (always
+    re-encoded as JPEG, at SIPS_JPEG_QUALITY, since that's the one
+    lossy format get_image_pixel_size() reads and sips writes reliably
+    for every input format IMAGE_EXTENSIONS accepts, PDF included,
+    where it rasterizes just the first page), or None on any failure
+    (sips missing, an unsupported/corrupt input, a timeout, ...), in
+    which case the caller is expected to fall back to sending data
+    unshrunk.
+
+    JPEG over PNG trades away alpha transparency (a JPEG thumbnail of a
+    source with an alpha channel gets it flattened against an opaque
+    background by sips) for a meaningfully smaller thumbnail on
+    photographic content, which is what SIPS_RESIZE_THRESHOLD_BYTES
+    mostly selects for in the first place (large photos/scans, not
+    small graphics) -- acceptable since this is only ever a thumbnail,
+    not the original file.
+
+    sips only reads/writes real files, not stdin/stdout, so this writes
+    data to a temporary input file (preserving ext, since sips
+    dispatches on the input filename's extension) and reads the result
+    back from a second temporary output file; both are removed before
+    returning.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as in_f:
+            in_f.write(data)
+            in_path = in_f.name
+    except OSError:
+        return None
+    out_path = in_path + ".out.jpg"
+    try:
+        result = subprocess.run(
+            [
+                "sips", "-Z", str(max_px),
+                "-s", "format", "jpeg",
+                "-s", "formatOptions", str(SIPS_JPEG_QUALITY),
+                in_path, "--out", out_path,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        with open(out_path, "rb") as out_f:
+            return out_f.read()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        for p in (in_path, out_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_sips=False, allow_taller=True):
     """Returns the escape sequence that renders the image at path as a
     thumbnail of `width` cells wide using iTerm2's inline image
     protocol (OSC 1337).
+
+    allow_taller must be False in multi-column output, where several
+    entries share one physical line: there, every thumbnail has to fit
+    the caller's own `height` exactly (1 row, unscaled by --scale, see
+    list_target()) since a taller one would visibly overlap whatever
+    comes after it on that same line, or on the row below (confirmed
+    against a real iTerm2 session -- and reported as a bug once the
+    aspect-ratio height computation below started actually being able
+    to compute a >1 height for a portrait/tall source image, which a
+    fixed flat height standing in for every image never could). It must
+    be True (the default) for -1/-l, the only contexts a taller
+    thumbnail is safe in (see _build_image_prefixes()'s own docstring).
+
+    no_sips (see --no-sips) skips the sips(1)-based shrink step below
+    entirely, sending the source file at its original resolution
+    regardless of size -- the pre-sips behavior, kept only for
+    comparing/debugging sips's own effect.
 
     For the 4 formats get_image_pixel_size() can read (PNG/GIF/BMP/
     JPEG), the height actually used is computed from the image's own
@@ -1268,11 +1412,19 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT):
     if not data:
         return ""
 
+    if not no_sips and len(data) > SIPS_RESIZE_THRESHOLD_BYTES and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
+        max_px = max(SIPS_TARGET_PX_MIN, width * SIPS_TARGET_PX_PER_CELL)
+        shrunk = _sips_shrink_image(data, ext, max_px)
+        if shrunk:
+            data = shrunk
+            ext = ".jpg"
+
     pixel_size = get_image_pixel_size(data, ext)
     if pixel_size:
         px_width, px_height = pixel_size
         if px_width > 0 and px_height > 0:
-            height = max(1, round(width * (px_height / px_width) / CELL_ASPECT_RATIO))
+            aspect_height = max(1, round(width * (px_height / px_width) / CELL_ASPECT_RATIO))
+            height = aspect_height if allow_taller else min(aspect_height, height)
 
     # A thumbnail taller than the terminal forces it to scroll partway
     # through drawing, which has been observed (on a real iTerm2
@@ -2150,6 +2302,11 @@ class Options:
     detect_dark_background() -- every other function that takes a theme
     argument (date_color_rgb(), stripe_sgr(), etc.) expects that
     resolved value, never "auto".
+
+    no_sips mirrors --no-sips, an undocumented/hidden flag (not in
+    print_help(), macls.md, or the module docstring's own option list)
+    that disables -I's sips(1)-based thumbnail shrinking -- see its own
+    handling in parse_options().
     """
 
     a: bool = False
@@ -2170,6 +2327,7 @@ class Options:
     quote: bool = False
     group_dirs_first: bool = False
     stripe: bool = False
+    no_sips: bool = False
     color: str = "auto"
     theme: str = "auto"
     tag_colors: str = "pastel"
@@ -2252,7 +2410,85 @@ def _fetch_mtimes(full_paths, use_color):
     return now, mtimes
 
 
-def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, stacked_flags=None, single_line=False):
+# Cap on concurrent build_image_prefix() calls (see
+# _build_images_parallel()) -- generous enough to hide sips(1)'s own
+# ~200ms process-startup latency behind concurrency for a directory
+# full of large images, without spawning an unbounded number of sips
+# processes at once for a directory with hundreds of them.
+IMAGE_THUMBNAIL_WORKERS = 8
+
+
+def _build_images_parallel(full_paths, width, height, no_sips=False, allow_taller=True):
+    """Returns build_image_prefix()'s result for each of full_paths, in
+    the same order, computed concurrently via a thread pool.
+
+    Each call is either a plain file read (fast) or, above
+    SIPS_RESIZE_THRESHOLD_BYTES, a sips(1) subprocess whose own
+    process-startup/framework-load cost (confirmed against a real
+    sips invocation to be on the order of ~200ms, largely independent
+    of the image's own size) would otherwise be paid once per image,
+    serially, for every large image in the listing -- e.g. `-I -l
+    ~/Pictures` over a folder of large photos. Since that cost is
+    almost entirely spent waiting on the external sips process rather
+    than on the GIL, a thread pool (not multiprocessing) is enough to
+    run them concurrently. A lone image, or none at all, skips the
+    pool entirely -- there's nothing to overlap.
+
+    allow_taller is forwarded as-is to every build_image_prefix() call
+    -- see its own docstring; the caller here is responsible for
+    passing False in multi-column output.
+    """
+    non_dirs = [p for p in full_paths if os.path.isfile(p)]
+    if len(non_dirs) <= 1:
+        return [build_image_prefix(p, width, height, no_sips, allow_taller) if os.path.isfile(p) else "" for p in full_paths]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_THUMBNAIL_WORKERS) as pool:
+        results = pool.map(
+            lambda p: build_image_prefix(p, width, height, no_sips, allow_taller) if os.path.isfile(p) else "",
+            full_paths,
+        )
+        return list(results)
+
+
+def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=False):
+    """Lazily yields each entry's img_suffix in full_paths' own order --
+    the \\r/\\n-then-image string _build_image_prefixes()'s single_line
+    branch would otherwise build eagerly for every entry before
+    returning (see build_image_prefix(), which this still calls the
+    same way, on the same bounded thread pool as
+    _build_images_parallel()).
+
+    Used only for -1/-l (single_line) mode, where each entry's own
+    output line is independent of every other entry's -- so a caller
+    that prints as it consumes this, rather than collecting it into a
+    list first, streams each line out as soon as its own thumbnail (if
+    it has one) is ready, instead of every entry in a large directory
+    blocking on whichever one is slowest to shrink (see
+    _sips_shrink_image()).
+
+    concurrent.futures.Executor.map() submits every item to the pool up
+    front (so all of them start making progress immediately, bounded by
+    IMAGE_THUMBNAIL_WORKERS) but only blocks on -- and only yields --
+    one result at a time, in submission order, as the caller consumes
+    the returned iterator; entries after the one currently being
+    awaited keep running in the background in the meantime. The pool
+    stays open across each yield (a generator suspends, but doesn't
+    exit, its `with` block) and is only torn down once every entry has
+    been produced (or the generator is otherwise closed/discarded).
+    """
+    def compute(i_and_path):
+        i, p = i_and_path
+        img = build_image_prefix(p, width, height, no_sips) if os.path.isfile(p) else ""
+        if not img:
+            return ""
+        if stacked_flags and stacked_flags[i]:
+            return "\n" + img
+        return "\r" + img
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_THUMBNAIL_WORKERS) as pool:
+        yield from pool.map(compute, enumerate(full_paths))
+
+
+def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, stacked_flags=None, single_line=False, no_sips=False):
     """-I: builds a thumbnail prefix/suffix pair for each entry.
 
     single_line (see list_target()'s scale_applies) must be true only
@@ -2317,10 +2553,10 @@ def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM
         return [""] * len(full_paths), [""] * len(full_paths), 0
     img_col_width = width + 1
     img_col_pad = " " * img_col_width
+    imgs = _build_images_parallel(full_paths, width, height, no_sips, allow_taller=single_line)
     img_prefixes = []
     img_suffixes = []
-    for i, p in enumerate(full_paths):
-        img = build_image_prefix(p, width, height) if os.path.isfile(p) else ""
+    for i, img in enumerate(imgs):
         if not single_line:
             # Multi-column output: the image must be drawn in place, as
             # part of this entry's own column -- see single_line above.
@@ -2684,7 +2920,22 @@ def list_target(mode, show_header, paths, opts):
 
         stacked_flags = [(img_width + text_width(i)) > term_width for i in range(len(names))]
 
-    img_prefixes, img_suffixes, img_col_width = _build_image_prefixes(full_paths, opts.i, img_width, img_height, stacked_flags, scale_applies)
+    if scale_applies:
+        # -1/-l with -I: img_prefixes here is always the same constant
+        # blank pad regardless of whether a given entry actually has a
+        # thumbnail (the image itself is drawn afterward via
+        # img_suffixes' own \r/\n trick -- see _build_image_prefixes()'s
+        # single_line branch), so it doesn't need to wait on any
+        # per-file work at all. img_suffixes is left as an all-empty
+        # placeholder here and computed lazily, entry by entry, in the
+        # streaming loop near the end of this function instead -- see
+        # _stream_image_suffixes() -- so a slow thumbnail only delays
+        # its own line, not every entry before it in the directory.
+        img_col_width = img_width + 1
+        img_prefixes = [" " * img_col_width] * len(full_paths)
+        img_suffixes = [""] * len(full_paths)
+    else:
+        img_prefixes, img_suffixes, img_col_width = _build_image_prefixes(full_paths, opts.i, img_width, img_height, stacked_flags, scale_applies, opts.no_sips)
 
     disp_names, hang_prefixes, suffixes, is_directories, bg_nums, dot_tagnums_list, entry_tags, namelen, plainlen = _build_entries(
         names, full_paths, sanitized_names, needs_quote, ansi_c_needed, any_quoted, opts, img_col_width
@@ -2713,15 +2964,39 @@ def list_target(mode, show_header, paths, opts):
     )
 
     if opts.l:
-        output.extend(_render_long_format(names, plain_l, final, img_prefixes, opts, order))
+        lines = _render_long_format(names, plain_l, final, img_prefixes, opts, order)
     elif multi and final:
         hang_width = 1 if (opts.quote and any_quoted) else 0
-        output.extend(render_multi_column_layout(layout, final, plainlen, effective_stripe, opts.theme, opts.use_truecolor, hang_width))
+        lines = render_multi_column_layout(layout, final, plainlen, effective_stripe, opts.theme, opts.use_truecolor, hang_width)
     else:
-        output.extend(final)
+        lines = final
 
-    if output:
-        sys.stdout.write("\n".join(output) + "\n")
+    if scale_applies:
+        # Stream: every line built above already ends with its
+        # placeholder empty img_suffix (see the scale_applies branch
+        # earlier in this function), so none of it actually depends on
+        # any image work having finished. Print the header/"total" line
+        # (if any) immediately, then each entry's own line as soon as
+        # its thumbnail (if it has one) is ready, instead of blocking
+        # on every thumbnail in the directory before printing anything
+        # -- see _stream_image_suffixes().
+        has_total = bool(plain_l) and plain_l[0].startswith("total ")
+        header_lines = lines[:1] if has_total else []
+        entry_lines = lines[1:] if has_total else lines
+        n_entries = len(entry_lines)
+        output.extend(header_lines)
+        if output:
+            sys.stdout.write("\n".join(output) + "\n")
+            sys.stdout.flush()
+        stacked = stacked_flags[:n_entries] if stacked_flags else None
+        suffixes_stream = _stream_image_suffixes(full_paths[:n_entries], img_width, img_height, stacked, opts.no_sips)
+        for line, suffix in zip(entry_lines, suffixes_stream):
+            sys.stdout.write(line + suffix + "\n")
+            sys.stdout.flush()
+    else:
+        output.extend(lines)
+        if output:
+            sys.stdout.write("\n".join(output) + "\n")
 
     # -R: after this directory's own contents, recurse into each of its
     # subdirectories in the same order they were just listed (depth
@@ -2893,7 +3168,7 @@ MODE_OPTIONS = (
 # Long options macls.py recognizes that plain ls(1) doesn't know
 # about, used by strip_macls_only_options() below to make the plain-ls
 # fallback actually work instead of erroring out on them.
-MACLS_ONLY_LONG_OPTS = tuple(name for name, *_ in MODE_OPTIONS) + ("--quote", "--group-directories-first", "--stripe", "--base-fg", "--scale")
+MACLS_ONLY_LONG_OPTS = tuple(name for name, *_ in MODE_OPTIONS) + ("--quote", "--group-directories-first", "--stripe", "--base-fg", "--scale", "--no-sips")
 
 
 def strip_macls_only_options(argv):
@@ -3077,6 +3352,15 @@ def parse_options(argv):
             continue
         if arg == "--stripe":
             opts.stripe = True
+            i += 1
+            continue
+        if arg == "--no-sips":
+            # Undocumented escape hatch: skips _sips_shrink_image()
+            # entirely, sending -I thumbnails at their original
+            # resolution again (the pre-sips behavior). Exists for
+            # comparing/debugging sips's own effect on thumbnail speed
+            # and quality, not for end users -- see SIPS_RESIZE_THRESHOLD_BYTES.
+            opts.no_sips = True
             i += 1
             continue
         if arg == "--base-fg" or arg.startswith("--base-fg="):
