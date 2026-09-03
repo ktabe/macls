@@ -607,15 +607,18 @@ SUFFIX_TYPE_SGR = {
 # using alt=True, so adjacent columns read as visually distinct bands.
 # Subtle gray tints rather than hues, so they read as a grouping cue
 # without competing with the foreground gradient or Finder tag colors.
-# Indexed as [dark_bg][alt]; dark_bg selects between the two variants
-# the same way it does for the foreground gradient stops.
+# Indexed as [theme][alt] ("light"/"dark", see opts.theme); theme
+# selects between the two variants the same way it does for the
+# foreground gradient stops. Each per-theme entry is a (alt=False,
+# alt=True) pair -- indexable directly with a bool since bool is an int
+# subclass in Python (False == 0, True == 1).
 STRIPE_BG_RGB = {
-    False: {False: (235, 239, 222), True: (215, 223, 189)},  # light background: faint gray, slightly darker faint gray
-    True: {False: (35, 35, 35), True: (48, 48, 48)},         # dark background: faint gray, slightly lighter faint gray
+    "light": ((235, 239, 222), (215, 223, 189)),  # pale gray-green, slightly darker pale gray-green
+    "dark": ((35, 35, 35), (20, 20, 20)),         # faint gray, slightly darker faint gray
 }
 STRIPE_BG_CODE = {
-    False: {False: "254", True: "187"},  # ANSI 256, light background
-    True: {False: "236", True: "238"},   # ANSI 256, dark background
+    "light": ("254", "187"),  # ANSI 256
+    "dark": ("236", "238"),   # ANSI 256
 }
 
 # Elapsed-time thresholds used by DATE_COLOR_STOPS_* below (seconds).
@@ -684,12 +687,13 @@ DATE_COLOR_STOPS_MAGENTA_DARKBG = [
     (None, (200, 200, 200)),
 ]
 
-# (family, dark_bg) -> the stops table to use.
+# (family, theme) -> the stops table to use. theme is "light" or "dark"
+# (see opts.theme, resolved from --theme's auto/light/dark by main()).
 DATE_COLOR_STOPS = {
-    ("cyan", False): DATE_COLOR_STOPS_CYAN_LIGHTBG,
-    ("cyan", True): DATE_COLOR_STOPS_CYAN_DARKBG,
-    ("magenta", False): DATE_COLOR_STOPS_MAGENTA_LIGHTBG,
-    ("magenta", True): DATE_COLOR_STOPS_MAGENTA_DARKBG,
+    ("cyan", "light"): DATE_COLOR_STOPS_CYAN_LIGHTBG,
+    ("cyan", "dark"): DATE_COLOR_STOPS_CYAN_DARKBG,
+    ("magenta", "light"): DATE_COLOR_STOPS_MAGENTA_LIGHTBG,
+    ("magenta", "dark"): DATE_COLOR_STOPS_MAGENTA_DARKBG,
 }
 
 # Each family's starting (newest-file) color, used as one endpoint of
@@ -787,26 +791,27 @@ def rgb_to_ansi256(rgb):
     return str(16 + 36 * ri + 6 * gi + bi)
 
 
-def date_color_rgb(mtime, now, bg_num, dark_bg, base_fg=None):
+def date_color_rgb(mtime, now, bg_num, theme, base_fg=None):
     """Maps recency of modification to a 24-bit (r, g, b) color. Selects
     the color family ("cyan"/"magenta") from FG_FAMILY_FOR_BG based on
     bg_num (the Finder tag number used for the background); if bg_num is
-    None (no background), uses NO_BG_FG_FAMILY. dark_bg picks between
-    the light-background and dark-background stops tables for that
-    family (see DATE_COLOR_STOPS). base_fg (see --base-fg), if given (an
-    (r, g, b) tuple), overrides the color the oldest files fade to: the
-    family's own stops table is replaced with one interpolated straight
-    from that family's vivid starting color to base_fg (see
-    build_date_color_stops()), ignoring dark_bg -- a user-specified
-    base_fg is assumed to already be the right color for their own
-    terminal, light or dark. Returns None if mtime is None."""
+    None (no background), uses NO_BG_FG_FAMILY. theme ("light" or
+    "dark", see opts.theme) picks between the light-background and
+    dark-background stops tables for that family (see DATE_COLOR_STOPS).
+    base_fg (see --base-fg), if given (an (r, g, b) tuple), overrides
+    the color the oldest files fade to: the family's own stops table is
+    replaced with one interpolated straight from that family's vivid
+    starting color to base_fg (see build_date_color_stops()), ignoring
+    theme -- a user-specified base_fg is assumed to already be the right
+    color for their own terminal, light or dark. Returns None if mtime
+    is None."""
     if mtime is None:
         return None
     family = FG_FAMILY_FOR_BG.get(bg_num, "cyan") if bg_num is not None else NO_BG_FG_FAMILY
     if base_fg is not None:
         stops = build_date_color_stops(FG_FAMILY_START_RGB[family], base_fg)
     else:
-        stops = DATE_COLOR_STOPS[(family, dark_bg)]
+        stops = DATE_COLOR_STOPS[(family, theme)]
     age = now - mtime
     if age < 0:
         age = 0
@@ -844,16 +849,17 @@ def finder_sgr(num, ground, use_truecolor, tag_colors="pastel"):
     return f"{ground};5;{code}"
 
 
-def stripe_sgr(use_truecolor, dark_bg, alt=False):
+def stripe_sgr(use_truecolor, theme, alt=False):
     """Returns the background SGR parameter string for --stripe's
-    tint. alt selects which of the two color variants to use (see
+    tint. theme is "light" or "dark" (see opts.theme). alt selects
+    which of the two color variants to use (see
     STRIPE_BG_RGB/STRIPE_BG_CODE) so a multi-column caller can alternate
     it by the entry's column parity, giving adjacent columns two
     distinct tints."""
     if use_truecolor:
-        r, g, b = STRIPE_BG_RGB[dark_bg][alt]
+        r, g, b = STRIPE_BG_RGB[theme][alt]
         return f"48;2;{r};{g};{b}"
-    return f"48;5;{STRIPE_BG_CODE[dark_bg][alt]}"
+    return f"48;5;{STRIPE_BG_CODE[theme][alt]}"
 
 
 def get_finder_tags(path):
@@ -1397,11 +1403,11 @@ def build_tag_label(all_tags, use_color, use_truecolor, tag_colors, bg_part=None
     return colored_label, display_width(plain_label)
 
 
-def build_colored_name(name, mtime, now, use_color, bold, suffix, dark_bg, use_truecolor, tag_colors, bg_num, dot_tagnums, stripe=False, stripe_col=None, suffix_color="match", fg_mode="date", base_fg=None):
+def build_colored_name(name, mtime, now, use_color, bold, suffix, theme, use_truecolor, tag_colors, bg_num, dot_tagnums, stripe=False, stripe_col=None, suffix_color="match", fg_mode="date", base_fg=None):
     """Builds the colored display for name.
     foreground: a gradient color based on recency of modification
     (date_color_rgb), using the dark- or light-background stops per
-    dark_bg, or (see --base-fg) base_fg's own interpolated stops if
+    theme, or (see --base-fg) base_fg's own interpolated stops if
     base_fg is given. fg_mode="off" (see --fg-mode) disables this,
     leaving name in the terminal's default foreground color --
     background coloring (Finder tag/stripe) is unaffected either way.
@@ -1456,7 +1462,7 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, dark_bg, use_t
     # affect this -- the gray tint doesn't clash with either family.
     # fg_mode="off" (see --fg-mode) skips this entirely, leaving name in
     # the terminal's default foreground color.
-    fg_rgb = date_color_rgb(mtime, now, bg_num, dark_bg, base_fg) if fg_mode == "date" else None
+    fg_rgb = date_color_rgb(mtime, now, bg_num, theme, base_fg) if fg_mode == "date" else None
 
     stripe_column = stripe and stripe_col is not None
     stripe_alt = stripe_col is not None and stripe_col % 2 == 0
@@ -1466,7 +1472,7 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, dark_bg, use_t
     if bg_num is not None:
         bg_part = finder_sgr(bg_num, "48", use_truecolor, tag_colors)
     elif use_stripe:
-        bg_part = stripe_sgr(use_truecolor, dark_bg, stripe_alt)
+        bg_part = stripe_sgr(use_truecolor, theme, stripe_alt)
 
     parts = []
     if bold:
@@ -1499,7 +1505,7 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, dark_bg, use_t
     # the connecting space below: a dot's SGR span otherwise only ever
     # sets foreground, leaving its background to fall through to
     # whatever's behind it in the terminal rather than the stripe.
-    dot_sgr_suffix = f";{stripe_sgr(use_truecolor, dark_bg, stripe_alt)}" if stripe_column else ""
+    dot_sgr_suffix = f";{stripe_sgr(use_truecolor, theme, stripe_alt)}" if stripe_column else ""
 
     extra = 0
     for o in reversed(dot_tagnums):
@@ -1509,7 +1515,7 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, dark_bg, use_t
             # striped column's tint has to be added explicitly rather
             # than inheriting it from name's own SGR span.
             if stripe_column:
-                out += f"\033[{stripe_sgr(use_truecolor, dark_bg, stripe_alt)}m \033[0m"
+                out += f"\033[{stripe_sgr(use_truecolor, theme, stripe_alt)}m \033[0m"
             else:
                 out += " "
             extra = 1
@@ -1921,7 +1927,7 @@ def compute_multi_column_layout(namelen, plainlen, opt_f, opt_columns, width, st
     }
 
 
-def render_multi_column_layout(layout, final, plainlen, stripe=False, dark_bg=False, use_truecolor=False, hang_width=0):
+def render_multi_column_layout(layout, final, plainlen, stripe=False, theme="light", use_truecolor=False, hang_width=0):
     """Renders final (colored entry strings) into lines, arranged per
     layout (from compute_multi_column_layout()).
 
@@ -1984,7 +1990,7 @@ def render_multi_column_layout(layout, final, plainlen, stripe=False, dark_bg=Fa
             if hang > 0 and hang < width:
                 lead = " " * hang
                 width -= hang
-            stripe_pad_sgr = stripe_sgr(use_truecolor, dark_bg, c % 2 == 0)
+            stripe_pad_sgr = stripe_sgr(use_truecolor, theme, c % 2 == 0)
             if row_end:
                 # Nothing follows on this line, so there's no next
                 # column to leave a separating gap before -- paint the
@@ -2102,7 +2108,7 @@ def render_multi_column_layout(layout, final, plainlen, stripe=False, dark_bg=Fa
     return lines
 
 
-def format_multi_column(final, namelen, plainlen, opt_f, opt_columns, stripe=False, dark_bg=False, use_truecolor=False, hang_width=0):
+def format_multi_column(final, namelen, plainlen, opt_f, opt_columns, stripe=False, theme="light", use_truecolor=False, hang_width=0):
     """Convenience wrapper combining compute_multi_column_layout() and
     render_multi_column_layout() for callers that don't need each
     entry's column ahead of time (see compute_multi_column_layout() for
@@ -2110,7 +2116,7 @@ def format_multi_column(final, namelen, plainlen, opt_f, opt_columns, stripe=Fal
     lines."""
     width = get_terminal_width()
     layout = compute_multi_column_layout(namelen, plainlen, opt_f, opt_columns, width, stripe)
-    return render_multi_column_layout(layout, final, plainlen, stripe, dark_bg, use_truecolor, hang_width)
+    return render_multi_column_layout(layout, final, plainlen, stripe, theme, use_truecolor, hang_width)
 
 
 @dataclass
@@ -2136,9 +2142,14 @@ class Options:
     for -I (see ITERM_IMG_WIDTH/ITERM_IMG_HEIGHT's own comment); 1 (no
     scaling) if not given.
 
-    use_color/dark_bg/use_truecolor are resolved by main() from
-    color/theme plus environment/tty detection (isatty(), CLICOLOR_FORCE,
-    COLORFGBG, COLORTERM).
+    use_color/use_truecolor are resolved by main() from color plus
+    environment/tty detection (isatty(), CLICOLOR_FORCE, COLORFGBG,
+    COLORTERM). theme starts as parse_options() left it ("light",
+    "dark", or "auto") and is resolved by main() in place, replacing
+    "auto" with a definite "light"/"dark" guess from
+    detect_dark_background() -- every other function that takes a theme
+    argument (date_color_rgb(), stripe_sgr(), etc.) expects that
+    resolved value, never "auto".
     """
 
     a: bool = False
@@ -2169,7 +2180,6 @@ class Options:
     base_fg: Optional[tuple] = None
     scale: int = 1
     use_color: bool = False
-    dark_bg: bool = False
     use_truecolor: bool = False
 
 
@@ -2498,14 +2508,14 @@ def _build_final_entries(names, full_paths, disp_names, hang_prefixes, suffixes,
             stripe_col = None
         colored, _extra = build_colored_name(
             disp_names[i], mtimes[i], now, opts.use_color, opts.b and is_directories[i], suffixes[i],
-            opts.dark_bg, opts.use_truecolor, opts.tag_colors,
+            opts.theme, opts.use_truecolor, opts.tag_colors,
             bg_nums[i], dot_tagnums_list[i], opts.stripe, stripe_col, opts.suffix_color, opts.fg_mode, opts.base_fg
         )
         tag_label = ""
         if entry_tags[i]:
             stripe_alt = stripe_col is not None and stripe_col % 2 == 0
             stripe_column = opts.use_color and opts.stripe and stripe_col is not None
-            bg_part = stripe_sgr(opts.use_truecolor, opts.dark_bg, stripe_alt) if stripe_column else None
+            bg_part = stripe_sgr(opts.use_truecolor, opts.theme, stripe_alt) if stripe_column else None
             tag_label, _ = build_tag_label(entry_tags[i], opts.use_color, opts.use_truecolor, opts.tag_colors, bg_part)
         if is_tty:
             colored = build_hyperlink(full_paths[i], colored)
@@ -2543,7 +2553,7 @@ def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
         idx = li + (order[i] if order is not None else i)
         if idx >= len(plain_l):
             break
-        surround_sgr = stripe_sgr(opts.use_truecolor, opts.dark_bg) if (opts.stripe and opts.use_color and i % 2 == 1) else None
+        surround_sgr = stripe_sgr(opts.use_truecolor, opts.theme) if (opts.stripe and opts.use_color and i % 2 == 1) else None
         spliced = splice_colored_name(name, plain_l[idx], final[i][len(img_prefixes[i]):], surround_sgr)
         output.append(img_prefixes[i] + spliced)
     return output
@@ -2706,7 +2716,7 @@ def list_target(mode, show_header, paths, opts):
         output.extend(_render_long_format(names, plain_l, final, img_prefixes, opts, order))
     elif multi and final:
         hang_width = 1 if (opts.quote and any_quoted) else 0
-        output.extend(render_multi_column_layout(layout, final, plainlen, effective_stripe, opts.dark_bg, opts.use_truecolor, hang_width))
+        output.extend(render_multi_column_layout(layout, final, plainlen, effective_stripe, opts.theme, opts.use_truecolor, hang_width))
     else:
         output.extend(final)
 
@@ -3162,13 +3172,9 @@ def main():
     else:
         opts.use_color = sys.stdout.isatty() or bool(os.environ.get("CLICOLOR_FORCE"))
 
-    if opts.theme == "dark":
-        opts.dark_bg = True
-    elif opts.theme == "light":
-        opts.dark_bg = False
-    else:
+    if opts.theme == "auto":
         detected = detect_dark_background()
-        opts.dark_bg = detected if detected is not None else False
+        opts.theme = "dark" if detected else "light"
 
     opts.use_truecolor = opts.use_color and supports_truecolor()
 
