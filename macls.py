@@ -3708,7 +3708,32 @@ def parse_options(argv):
             positional.append(arg)
             i += 1
             continue
-        for ch in arg[1:]:
+        chars = arg[1:]
+        j = 0
+        while j < len(chars):
+            ch = chars[j]
+            if ch.isdigit():
+                # -N shorthand for --scale=N (see --scale above),
+                # combined with other short flags in any order/position
+                # -- e.g. "-Il2" (-I -l --scale=2) and "-2I" (--scale=2
+                # -I) both work, each consuming the maximal run of
+                # digits starting here as N before resuming normal
+                # flag-by-flag scanning right after it. A run that's
+                # exactly "1" is exempted (falls through to the
+                # ch == "1" case below) -- that's -1's own existing
+                # single-column meaning, not worth shadowing for
+                # --scale=1, which is --scale's own default anyway.
+                k = j
+                while k < len(chars) and chars[k].isdigit():
+                    k += 1
+                run = chars[j:k]
+                if run != "1":
+                    n = parse_positive_int(run)
+                    if n is None:
+                        die_invalid_scale(run)
+                    opts.scale = n
+                    j = k
+                    continue
             if ch == "a":
                 opts.a = True
             elif ch == "A":
@@ -3749,6 +3774,7 @@ def parse_options(argv):
                 # Fall back to plain ls (colorized) for unsupported options.
                 argv_fb, env_fb = plain_ls_fallback_argv_env(opts.color)
                 os.execvpe("ls", argv_fb + strip_macls_only_options(argv), env_fb)
+            j += 1
         i += 1
     if sys.platform == "win32":
         # A path argument tab-completed by PowerShell with a trailing
