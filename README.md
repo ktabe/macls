@@ -66,7 +66,9 @@ still stripes as a single band, based on the column it starts in.
 
 With `-I`, image files (such as `.png`, `.jpeg`, and `.pdf`) show a
 thumbnail next to their name using iTerm2's inline image protocol — no
-`open` or separate viewer needed.
+`open` or separate viewer needed. Word/Excel/PowerPoint documents
+(`.docx`/`.xlsx`/`.pptx`, and the legacy `.doc`/`.xls`/`.ppt`) get a
+real rendered preview too, via macOS's Quick Look.
 
 You can enlarge the image with the `--scale` option, though it only
 takes effect with `-1` or `-l` — multi-column output ignores it.
