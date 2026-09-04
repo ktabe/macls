@@ -4,7 +4,7 @@ NAME
     macls.py -- colorized directory listing for macOS
 
 SYNOPSIS
-    macls.py [-I] [--scale=n] [--ql-ext=spec] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
+    macls.py [-I] [--scale=n | -n] [--ql-ext=spec] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
                [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode]
                [--fg-mode=mode] [--base-fg=RRGGBB] [--quote]
                [--group-directories-first]
@@ -98,6 +98,12 @@ DESCRIPTION
                 Omitting --scale is equivalent to "--scale=1" (the base
                 size, one row tall, where top and bottom coincide so
                 none of this applies). Has no effect without -I.
+
+                -N (N a positive integer other than 1) is shorthand for
+                --scale=N -- e.g. -2 is the same as --scale=2. -1
+                itself keeps its own existing meaning (single-column
+                output) rather than becoming --scale=1, which
+                --scale's own default already is.
 
     --ql-ext=spec
                 Adjusts which extensions -I tries a Quick Look preview
@@ -3221,7 +3227,7 @@ def list_target(mode, show_header, paths, opts):
 
 
 def print_help():
-    print(f"""Usage: {PROG} [-a] [-A] [-l] [-h] [-1] [-C] [-F] [-I] [--scale=n] [--ql-ext=spec] [-t] [-S] [-X] [-r] [-d] [-R] [-B] [--color=when] [--theme=mode] [--tag-colors=mode] [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode] [--fg-mode=mode] [--base-fg=RRGGBB] [--quote] [--group-directories-first] [--version] [path...]
+    print(f"""Usage: {PROG} [-a] [-A] [-l] [-h] [-1] [-C] [-F] [-I] [--scale=n | -n] [--ql-ext=spec] [-t] [-S] [-X] [-r] [-d] [-R] [-B] [--color=when] [--theme=mode] [--tag-colors=mode] [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode] [--fg-mode=mode] [--base-fg=RRGGBB] [--quote] [--group-directories-first] [--version] [path...]
 
 Options:
   -a        Show all files, including . and ..
@@ -3239,7 +3245,10 @@ Options:
   --scale=n Multiply the -I thumbnail's width and height by n. Has an
             effect only in -1/-l (the only contexts -I itself is ever
             active in, since it's disabled outright on non-tty output).
-            Omitting n is the same as 1. No effect without -I.
+            Omitting n is the same as 1. No effect without -I. -N (N
+            other than 1) is shorthand for --scale=N, e.g. -2 for
+            --scale=2; -1 itself keeps its existing single-column
+            meaning.
   --ql-ext=spec
             Adjust which extensions -I tries a Quick Look preview for,
             beyond image files. spec is "off" (disable Quick Look
@@ -3415,6 +3424,11 @@ def strip_macls_only_options(argv):
             result.append(arg)
             continue
         if any(arg == opt or arg.startswith(opt + "=") for opt in MACLS_ONLY_LONG_OPTS):
+            continue
+        if arg != "-1" and len(arg) > 1 and arg[1:].isdigit():
+            # -N, parse_options()'s own shorthand for --scale=N -- real
+            # ls(1) has no such option, so this needs stripping here
+            # too, the same as MACLS_ONLY_LONG_OPTS' long options.
             continue
         result.append(arg)
     return result
@@ -3635,6 +3649,20 @@ def parse_options(argv):
             if parsed is None:
                 die_invalid_ql_ext(value)
             opts.ql_ext_mode, opts.ql_ext_extra = parsed
+            i += 1
+            continue
+        if arg != "-1" and len(arg) > 1 and arg[1:].isdigit():
+            # -N shorthand for --scale=N (see --scale above), for any N
+            # other than 1: "-1" itself already means single-column
+            # output (opts.one, in the per-character loop below) and
+            # keeps that meaning -- there'd be nothing for "-1" as a
+            # scale shortcut to do anyway, since --scale=1 is already
+            # the unscaled base size.
+            value = arg[1:]
+            n = parse_positive_int(value)
+            if n is None:
+                die_invalid_scale(value)
+            opts.scale = n
             i += 1
             continue
         if arg == "--":

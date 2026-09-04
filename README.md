@@ -70,8 +70,9 @@ thumbnail next to their name using iTerm2's inline image protocol — no
 (`.docx`/`.xlsx`/`.pptx`, and the legacy `.doc`/`.xls`/`.ppt`) get a
 real rendered preview too, via macOS's Quick Look.
 
-You can enlarge the image with the `--scale` option, though it only
-takes effect with `-1` or `-l` — multi-column output ignores it.
+You can enlarge the image with the `--scale` option (or its `-N`
+shorthand, e.g. `-2` for `--scale=2`), though it only takes effect with
+`-1` or `-l` — multi-column output ignores it.
 
 <p align="center">
   <img src="docs/screenshots/macls-images.png" alt="Alternating column stripe background" width="520">
