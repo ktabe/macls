@@ -1,7 +1,7 @@
 # *macls.py*
 
-A dependency-free, single-file Python 3 script that's a drop-in colorized
-replacement for macOS's `ls`.
+
+A single-file, dependency-free Python 3 script that can replace the `ls` command. Runs on macOS and Linux.
 
 Japanese/日本語版: [README-ja.md](README-ja.md)
 
@@ -23,7 +23,7 @@ Every name is colored by how recently it changed — 5 min / 30 min /
 mid-edit on jumps out at a glance, with no need for `-t` or a mental
 timestamp comparison.
 
-### Finder tags as background color
+### Finder tags as background color (macOS)
 
 Tag a file in Finder, see it in the terminal:
 
@@ -62,17 +62,18 @@ still stripes as a single band, based on the column it starts in.
 </p>
 
 
-### Inline image thumbnails (iTerm2)
+### Inline image thumbnails (iTerm2/WezTerm)
 
-With `-I`, image files (such as `.png`, `.jpeg`, and `.pdf`) show a
-thumbnail next to their name using iTerm2's inline image protocol — no
-`open` or separate viewer needed. Word/Excel/PowerPoint documents
-(`.docx`/`.xlsx`/`.pptx`, and the legacy `.doc`/`.xls`/`.ppt`) get a
-real rendered preview too, via macOS's Quick Look.
+With `-I`, image files (`.png`, `.jpeg`, `.pdf`, etc.) show a
+thumbnail next to their name using iTerm2's inline image protocol
+(also supported by WezTerm) — no `open` or separate viewer needed.
 
-You can enlarge the image with the `--scale` option (or its `-N`
-shorthand, e.g. `-2` for `--scale=2`), though it only takes effect with
-`-1` or `-l` — multi-column output ignores it.
+Word/Excel/PowerPoint documents (`.docx`/`.xlsx`/`.pptx`/`.doc`/`.xls`/`.ppt`) get a thumbnail too, via macOS's Quick Look. `--ql-ext` adjusts which extensions get one: `off` disables Quick Look thumbnails, `all` tries every non-image extension, or a comma-separated list (e.g. `--ql-ext=md,rtf`) adds extensions on top of the default list.
+
+By default, the thumbnail is a single row; you can enlarge it with the
+`--scale=N` option (or its `-N` shorthand, e.g. `-2` for `--scale=2`),
+though it only takes effect with `-1` or `-l` — multi-column output
+ignores it.
 
 <p align="center">
   <img src="docs/screenshots/macls-images.png" alt="Alternating column stripe background" width="520">
@@ -80,7 +81,7 @@ shorthand, e.g. `-2` for `--scale=2`), though it only takes effect with
 
 ### Clickable filenames
 
-Every filename shown by *macls.py* is a hyperlink to its `file://` URL. You can Cmd-click to open it in Finder (iTerm2 only).
+Every filename shown by *macls.py* is a hyperlink to its `file://` URL. In iTerm2, Cmd-click opens it; in WezTerm, just click.
 
 On iTerm2, filenames are shown with an underline to indicate a hyperlink. You can disable underlining in iTerm2 settings (Settings > Advanced > Underline OSC 8 hyperlinks to off).
 
@@ -118,9 +119,7 @@ It works by just dropping `macls.py` into a directory in your PATH.
 ## Requirements
 
 - Python 3.9+ (recent macOS's `/usr/bin/python3` should work)
-- macOS (Finder tags and `-I` thumbnails are macOS/iTerm2-only; basic
-  listing and coloring also work on Linux, including WSL2)
-- [iTerm2](https://iterm2.com/) recommended, for `-I` thumbnails and clickable filenames
+- [iTerm2](https://iterm2.com/) or [WezTerm](https://wezterm.org/) recommended, for `-I` thumbnails and clickable filenames
 
 ## Install
 
@@ -140,6 +139,7 @@ alias ls='/path/to/macls.py -BF --stripe --suffix-color=type --fg-mode=date --ta
 ./macls.py
 ./macls.py -la ~/Desktop
 ./macls.py -I -1 --scale=2 ~/Pictures
+./macls.py -Il4 ~/Pictures
 ./macls.py --stripe --tag=str
 ```
 

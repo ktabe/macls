@@ -1,6 +1,6 @@
 # *macls.py*
 
-外部依存のない単一ファイルのPython 3スクリプトで、macOSの `ls` をそのまま置き換えられるカラー表示版です。
+`ls`コマンドを置き換えられる、外部依存のない単一ファイルのPython 3スクリプトです。macOSやLinuxで動作します。
 
 English version: [README.md](README.md).
 
@@ -16,7 +16,7 @@ English version: [README.md](README.md).
 
 すべての名前は「5分 / 30分 / 1時間 / 2時間 / 1日 / 1週間 / 1ヶ月 / それ以上」という更新日時の新しさで色分けされるので、`-t` を使ったりタイムスタンプを頭の中で比較したりしなくても、今まさに編集中のファイルが一目でわかります。
 
-### Finder タグを背景色に
+### Finder タグを背景色に(macOS)
 
 Finderでファイルにタグを付けると、ターミナルにもそれが反映されます:
 
@@ -45,11 +45,13 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
 </p>
 
 
-### インライン画像サムネイル(iTerm2)
+### サムネイル表示(iTerm2/WezTerm)
 
-`-I` を指定すると、画像ファイル(`.png`、`.jpeg`、`.pdf` など)の名前の横に、iTerm2のインライン画像プロトコルを使ってサムネイルが表示されます。`open` や別のビューアーは不要です。Word/Excel/PowerPointファイル(`.docx`/`.xlsx`/`.pptx`、および旧形式の`.doc`/`.xls`/`.ppt`)もmacOSのQuick Look経由で実際のプレビューが表示されます。
+`-I` を指定すると、画像ファイル(`.png`、`.jpeg`、`.pdf` など)にサムネイルが表示されます(iTerm2やWezTermなど、iTerm2互換のインライン画像プロトコルをサポートしている端末のみ)。`open` や別のビューアーは不要です。
 
-`--scale` オプション（`-2`のように`-N`と省略も可能）でサムネイルを拡大できますが、これが効くのは `-1` または `-l` のときだけで、複数列表示では無視されます。
+macOSでは、Word/Excel/PowerPointファイル(`.docx`/`.xlsx`/`.pptx`/`.doc`/`.xls`/`.ppt`)でQuick Lookサムネイルが表示されます。サムネイルを表示する対象の拡張子は`--ql-ext`で調整できます: カンマ区切りのリスト(例: `--ql-ext=txt,md,rtf`)で対象の拡張子を追加できます。`off`でQuick Lookサムネイルを無効化、`all`ですべての拡張子を対象にします。
+
+デフォルトではサムネイルは1行で表示されますが、`--scale=N`オプション(Nは整数、`-N`と省略も可能)で拡大できます。ただし、これが効くのは `-1` または `-l` のときだけで、複数列表示では無視されます。
 
 <p align="center">
   <img src="docs/screenshots/macls-images.png" alt="Alternating column stripe background" width="520">
@@ -57,9 +59,9 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
 
 ### クリック可能なファイル名
 
-*macls.py* が表示するすべてのファイル名は、その `file://` URLへのハイパーリンクになっています。Cmdクリックで Finder から開けます(iTerm2のみ)。
+*macls.py* が表示するすべてのファイル名は、`file://` URLへのハイパーリンクになっています。iTerm2ではCmdクリックで、WezTermではクリックするだけで開けます。
 
-iTerm2では、ハイパーリンクであることを示す下線付きでファイル名が表示されます。この下線はiTerm2の設定(Settings > Advanced > Underline OSC 8 hyperlinks)でオフにできます。
+iTerm2では、ファイル名はハイパーリンクであることを示す下線付きで表示されます。この下線はiTerm2の設定(Settings > Advanced > Underline OSC 8 hyperlinks)でオフにできます。
 
 ### 末尾記号の色付け
 
@@ -90,9 +92,8 @@ iTerm2では、ハイパーリンクであることを示す下線付きでフ�
 
 ## 必要環境
 
-- Python 3.9+(最近のmacOS標準の `/usr/bin/python3` で動作するはずです)
-- macOS(Finder タグと `-I` サムネイルはmacOS/iTerm2専用。基本的な一覧表示と色付けはLinux(WSL2含む)でも動作します)
-- [iTerm2](https://iterm2.com/) 推奨(`-I` サムネイルとクリック可能なファイル名のため)
+- Python 3.9+(最近のmacOSでは標準の `/usr/bin/python3` で動作するはずです)
+- [iTerm2](https://iterm2.com/) または [WezTerm](https://wezterm.org/) 推奨(`-I` サムネイルとクリック可能なファイル名のため)
 
 ## インストール
 
@@ -112,6 +113,7 @@ alias ls='/path/to/macls.py -BF --stripe --suffix-color=type --fg-mode=date --ta
 ./macls.py
 ./macls.py -la ~/Desktop
 ./macls.py -I -1 --scale=2 ~/Pictures
+./macls.py -Il4 ~/Pictures
 ./macls.py --stripe --tag=str
 ```
 

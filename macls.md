@@ -55,8 +55,9 @@ Display a thumbnail of image files, and of Word/Excel/PowerPoint
 documents (modern `.docx`/`.xlsx`/`.pptx` or legacy `.doc`/`.xls`/`.ppt`
 — an actual rendered first-page/sheet/slide preview via macOS's Quick
 Look, not a generic icon), to the left of the name, using
-iTerm2's inline image protocol (OSC 1337). Ignored outside iTerm2, or
-when standard output is not a terminal. The thumbnail's width is fixed
+iTerm2's inline image protocol (OSC 1337), also supported by WezTerm.
+Ignored outside iTerm2/WezTerm, or when standard output is not a
+terminal. The thumbnail's width is fixed
 (see `--scale`); for PNG/GIF/BMP/JPEG, its height is instead computed
 from that image's own aspect ratio, so a landscape photo doesn't end up
 with wasted blank space around it. Every other image extension keeps a
@@ -355,7 +356,7 @@ ever used as the background then.
 - Finder tags are read directly from the `com.apple.metadata:_kMDItemUserTags`
   extended attribute — macOS-only. On other platforms, files are always
   treated as untagged.
-- `-I` thumbnails only render in iTerm2, with standard output attached to
-  a terminal.
+- `-I` thumbnails only render in iTerm2 or WezTerm, with standard output
+  attached to a terminal.
 - Thumbnail height can only be computed from the image's own aspect ratio
   for PNG/GIF/BMP/JPEG; other image extensions keep a flat height.
