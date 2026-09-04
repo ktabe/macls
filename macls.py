@@ -510,15 +510,17 @@ IMPLEMENTATION NOTES
 
     -I shrinks a source image with the sips(1) command before
     base64-encoding/transmitting it, but only once the file is above
-    SIPS_RESIZE_THRESHOLD_BYTES: below that, reading and encoding it
-    as-is is already fast, and sips's own process-startup cost would be
-    the larger expense, not a win. Above it -- a multi-megapixel photo,
-    a scanned PDF, an iPhone HEIC -- what's actually slow is
-    base64-encoding and transmitting the full-resolution original just
-    for iTerm2 to downscale it on arrival, so shrinking it locally
-    first (to a size still generous enough to stay sharp on a HiDPI
-    display, see SIPS_TARGET_PX_PER_CELL) fixes that. No dependency is
-    added: sips ships with macOS itself. See _sips_shrink_image().
+    SIPS_RESIZE_THRESHOLD_BYTES (PDF is the one exception, see
+    SIPS_ALWAYS_CONVERT_EXTENSIONS, always shrunk regardless of size):
+    below that, reading and encoding it as-is is already fast, and
+    sips's own process-startup cost would be the larger expense, not a
+    win. Above it -- a multi-megapixel photo, a scanned PDF, an iPhone
+    HEIC -- what's actually slow is base64-encoding and transmitting
+    the full-resolution original just for iTerm2 to downscale it on
+    arrival, so shrinking it locally first (to a size still generous
+    enough to stay sharp on a HiDPI display, see
+    SIPS_TARGET_PX_PER_CELL) fixes that. No dependency is added: sips
+    ships with macOS itself. See _sips_shrink_image().
 
     -I also thumbnails Word/Excel/PowerPoint documents, both the modern
     Office Open XML formats and the legacy binary ones (see
@@ -671,6 +673,19 @@ SIPS_RESIZE_THRESHOLD_BYTES = 512 * 1024
 # its first frame, which would silently kill iTerm2's own inline
 # playback of an animated thumbnail.
 SIPS_RESIZE_SKIP_EXTENSIONS = {".gif"}
+
+# Extensions build_image_prefix() always shrinks via sips regardless of
+# SIPS_RESIZE_THRESHOLD_BYTES -- the opposite of SIPS_RESIZE_SKIP_EXTENSIONS.
+# PDF isn't one of the formats IMAGE_PIXEL_SIZE_PARSERS can read, so a
+# PDF sent unconverted (below the size threshold) never gets a real
+# aspect-ratio height (see build_image_prefix()), unlike one that goes
+# through sips and comes out as a JPEG -- observed as the same file
+# looking a different, inconsistent size (and no longer transparent,
+# since JPEG has no alpha channel, where a raw PDF's undefined
+# background can render see-through in iTerm2) purely based on which
+# side of the size threshold it happened to land on. Always converting
+# PDFs keeps that consistent regardless of size.
+SIPS_ALWAYS_CONVERT_EXTENSIONS = {".pdf"}
 
 # Rough pixels-per-cell estimate used to size the sips resize target
 # (see _sips_shrink_image()) from a thumbnail's width in terminal
@@ -1583,7 +1598,8 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_
         if not data:
             return ""
 
-        if not no_sips and len(data) > SIPS_RESIZE_THRESHOLD_BYTES and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
+        should_shrink = ext in SIPS_ALWAYS_CONVERT_EXTENSIONS or len(data) > SIPS_RESIZE_THRESHOLD_BYTES
+        if not no_sips and should_shrink and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
             shrunk = _sips_shrink_image(data, ext, max_px)
             if shrunk:
                 data = shrunk
