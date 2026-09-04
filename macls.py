@@ -2993,6 +2993,28 @@ def _build_final_entries(names, full_paths, disp_names, hang_prefixes, suffixes,
     return final
 
 
+def _plain_l_has_total(plain_l, n_entries):
+    """Whether plain_l (a prior real `ls -l` call's output lines -- see
+    run_ls()) starts with ls's own "total" header line rather than its
+    first entry's own permissions/owner/size/date/name data.
+
+    Real ls only ever emits this line when listing a directory (never
+    for explicit non-directory file arguments -- see list_target(),
+    which always calls this with n_entries from that same, single
+    target), so its presence is inferred here purely from the line
+    count: plain_l has exactly one more line than there are entries.
+
+    This used to instead check plain_l[0].startswith("total "), which
+    silently stopped matching whenever ls's own LANG/LC_ALL differed
+    from the assumption of English output -- e.g. a Japanese locale's
+    ls -l prints "合計" ("total"'s Japanese translation), not "total"
+    -- so the header line was mistaken for entry 0's own data, and
+    every subsequent entry then got spliced (see _render_long_format())
+    against the wrong real ls -l line, one off from where it belonged.
+    """
+    return bool(plain_l) and len(plain_l) == n_entries + 1
+
+
 def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
     """Renders -l output: splices the colored name (see
     splice_colored_name()) into each of plain_l's real permissions/
@@ -3016,7 +3038,7 @@ def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
     """
     output = []
     li = 0
-    if plain_l and plain_l[0].startswith("total "):
+    if _plain_l_has_total(plain_l, len(names)):
         output.append(plain_l[0])
         li = 1
     for i, name in enumerate(names):
@@ -3141,7 +3163,7 @@ def list_target(mode, show_header, paths, opts):
     stacked_flags = None
     if scale_applies and scale > 1:
         if opts.l and plain_l is not None:
-            entry_lines = plain_l[1:] if plain_l and plain_l[0].startswith("total ") else plain_l
+            entry_lines = plain_l[1:] if _plain_l_has_total(plain_l, len(names)) else plain_l
 
             def text_width(i):
                 idx = order[i] if order is not None else i
@@ -3225,7 +3247,7 @@ def list_target(mode, show_header, paths, opts):
         # its thumbnail (if it has one) is ready, instead of blocking
         # on every thumbnail in the directory before printing anything
         # -- see _stream_image_suffixes().
-        has_total = bool(plain_l) and plain_l[0].startswith("total ")
+        has_total = _plain_l_has_total(plain_l, len(names))
         header_lines = lines[:1] if has_total else []
         entry_lines = lines[1:] if has_total else lines
         n_entries = len(entry_lines)
