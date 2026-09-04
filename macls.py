@@ -4,7 +4,7 @@ NAME
     macls.py -- colorized directory listing for macOS
 
 SYNOPSIS
-    macls.py [-I] [--scale=n] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
+    macls.py [-I] [--scale=n] [--ql-ext=spec] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
                [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode]
                [--fg-mode=mode] [--base-fg=RRGGBB] [--quote]
                [--group-directories-first]
@@ -98,6 +98,32 @@ DESCRIPTION
                 Omitting --scale is equivalent to "--scale=1" (the base
                 size, one row tall, where top and bottom coincide so
                 none of this applies). Has no effect without -I.
+
+    --ql-ext=spec
+                Adjusts which extensions -I tries a Quick Look preview
+                for (Word/Excel/PowerPoint documents by default -- see
+                QL_EXTENSIONS) beyond IMAGE_EXTENSIONS' own image files,
+                which are unaffected by this option either way. spec is
+                one of:
+
+                off       Disables Quick Look thumbnails entirely.
+                all       Every extension not already in
+                          IMAGE_EXTENSIONS becomes a Quick Look
+                          candidate, not just QL_EXTENSIONS' own curated
+                          list (extension-less files are still skipped)
+                          -- can be noticeably slower over a directory
+                          with many non-image files, since each one not
+                          previously known to have a real preview is
+                          now tried anyway.
+                ext,ext,...
+                          A comma-separated list of extensions (with or
+                          without a leading dot, e.g. "md,rtf") added on
+                          top of QL_EXTENSIONS' own defaults, not
+                          replacing them.
+
+                Has no effect without -I. There's no bare "--ql-ext"
+                form (unlike --scale/--tag/etc.) -- a value is always
+                required.
 
     -B          Show directory names in bold
 
@@ -616,6 +642,18 @@ IMAGE_EXTENSIONS = {
 # one file family: any other extension with a real (non-generic-icon)
 # Quick Look generator is a candidate to add here later.
 QL_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
+
+# Timeout (seconds) _qlmanage_thumbnail() gives qlmanage(1) before
+# killing it and treating the thumbnail as failed. Kept short: some
+# extensions (confirmed with plain .out/.err log files, most likely
+# whenever Quick Look has no real generator for the content and falls
+# through to some slow default path) make qlmanage hang seemingly
+# indefinitely rather than fail fast, and a directory can easily
+# contain many such files -- especially under --ql-ext=all, which
+# tries every non-image extension. 1s is well above qlmanage's normal
+# few-hundred-ms case (see _qlmanage_thumbnail()'s own docstring) but
+# short enough that a run of hangs doesn't stall a whole listing.
+QLMANAGE_TIMEOUT_SECONDS = 1
 
 # build_image_prefix() only bothers shelling out to sips(1) to shrink a
 # source image before base64-encoding/transmitting it once the file is
@@ -1413,7 +1451,8 @@ def _qlmanage_thumbnail(path, max_px):
         tmp_dir = tempfile.mkdtemp(prefix="macls-ql-")
         result = subprocess.run(
             ["qlmanage", "-t", "-s", str(max_px), "-o", tmp_dir, path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=QLMANAGE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
             return None
@@ -1428,7 +1467,7 @@ def _qlmanage_thumbnail(path, max_px):
     return _sips_shrink_image(png_data, ".png", max_px)
 
 
-def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_sips=False, allow_taller=True):
+def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_sips=False, allow_taller=True, ql_extensions=QL_EXTENSIONS):
     """Returns the escape sequence that renders the image at path as a
     thumbnail of `width` cells wide using iTerm2's inline image
     protocol (OSC 1337).
@@ -1474,19 +1513,50 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_
     reserved for it there -- self-positioning, using only the image's
     own declared width, without needing its height at all.
 
-    Returns "" if the file isn't an image or Office document (see
-    QL_EXTENSIONS), or can't be read/previewed (the caller is
-    expected to have already checked preconditions like
-    iterm2_supported()).
+    ql_extensions (see --ql-ext) selects which non-image extensions are
+    Quick Look candidates (is_ql below): QL_EXTENSIONS by default, None
+    as a sentinel for "any extension not already in IMAGE_EXTENSIONS"
+    (--ql-ext=all), or any other set/frozenset (including the empty one
+    for --ql-ext=off) checked by plain membership. An IMAGE_EXTENSIONS
+    file is never treated as a Quick Look candidate regardless of
+    ql_extensions, even under --ql-ext=all or a --ql-ext list that
+    happens to include one of its extensions -- IMAGE_EXTENSIONS files
+    already have a strictly better dedicated path (their own real
+    pixel data, not a qlmanage-rendered preview).
+
+    Returns "" if the file isn't an image or Quick Look candidate, or
+    can't be read/previewed (the caller is expected to have already
+    checked preconditions like iterm2_supported()).
     """
     ext = os.path.splitext(path)[1].lower()
+    try:
+        ql_size = os.path.getsize(path)
+    except OSError:
+        ql_size = 0
     # A "~$name.docx"-style lock file Word/Excel/PowerPoint leaves next
-    # to a document while it's open elsewhere isn't actually an Office
-    # Open XML package (just a small owner-info stub with the same
-    # extension) -- qlmanage has been observed to hang well past its
-    # own timeout trying to preview one, so these are excluded from
-    # is_ql entirely rather than left to fail slowly.
-    is_ql = ext in QL_EXTENSIONS and not os.path.basename(path).startswith("~$")
+    # to a document while it's open elsewhere isn't actually a valid
+    # document (just a small owner-info stub with the same extension)
+    # -- qlmanage has been observed to hang well past its own timeout
+    # trying to preview one, so these are excluded from is_ql entirely
+    # rather than left to fail slowly. A 0-byte file is excluded the
+    # same way: there's no content for Quick Look to render, and an
+    # empty file has also been observed to make qlmanage hang rather
+    # than fail fast (see QLMANAGE_TIMEOUT_SECONDS) -- either way,
+    # never a thumbnail candidate regardless of ql_extensions/--ql-ext.
+    # An extension-less file is excluded too, but only because
+    # --ql-ext=all's ql_extensions=None sentinel would otherwise treat
+    # having no extension as "not in IMAGE_EXTENSIONS" and so a
+    # candidate: --ql-ext's own list form can never add "no extension"
+    # as a candidate to begin with (empty entries are rejected by
+    # parse_ql_ext()), so this only ever changes --ql-ext=all's own
+    # behavior, not the default/list ones.
+    is_ql = (
+        ext not in IMAGE_EXTENSIONS
+        and ext != ""
+        and not os.path.basename(path).startswith("~$")
+        and ql_size > 0
+        and (ql_extensions is None or ext in ql_extensions)
+    )
     if ext not in IMAGE_EXTENSIONS and not is_ql:
         return ""
 
@@ -2407,6 +2477,13 @@ class Options:
     print_help(), macls.md, or the module docstring's own option list)
     that disables -I's sips(1)-based thumbnail shrinking -- see its own
     handling in parse_options().
+
+    ql_ext_mode/ql_ext_extra mirror --ql-ext, parsed by parse_ql_ext():
+    mode is "default" (QL_EXTENSIONS as-is, when --ql-ext wasn't
+    given), "off", "all", or "list" (QL_EXTENSIONS plus ql_ext_extra's
+    additional extensions). See list_target(), which resolves these
+    into the single ql_extensions value threaded through
+    build_image_prefix() and friends.
     """
 
     a: bool = False
@@ -2428,6 +2505,8 @@ class Options:
     group_dirs_first: bool = False
     stripe: bool = False
     no_sips: bool = False
+    ql_ext_mode: str = "default"
+    ql_ext_extra: tuple = ()
     color: str = "auto"
     theme: str = "auto"
     tag_colors: str = "pastel"
@@ -2518,7 +2597,7 @@ def _fetch_mtimes(full_paths, use_color):
 IMAGE_THUMBNAIL_WORKERS = 8
 
 
-def _build_images_parallel(full_paths, width, height, no_sips=False, allow_taller=True):
+def _build_images_parallel(full_paths, width, height, no_sips=False, allow_taller=True, ql_extensions=QL_EXTENSIONS):
     """Returns build_image_prefix()'s result for each of full_paths, in
     the same order, computed concurrently via a thread pool.
 
@@ -2540,16 +2619,16 @@ def _build_images_parallel(full_paths, width, height, no_sips=False, allow_talle
     """
     non_dirs = [p for p in full_paths if os.path.isfile(p)]
     if len(non_dirs) <= 1:
-        return [build_image_prefix(p, width, height, no_sips, allow_taller) if os.path.isfile(p) else "" for p in full_paths]
+        return [build_image_prefix(p, width, height, no_sips, allow_taller, ql_extensions) if os.path.isfile(p) else "" for p in full_paths]
     with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_THUMBNAIL_WORKERS) as pool:
         results = pool.map(
-            lambda p: build_image_prefix(p, width, height, no_sips, allow_taller) if os.path.isfile(p) else "",
+            lambda p: build_image_prefix(p, width, height, no_sips, allow_taller, ql_extensions) if os.path.isfile(p) else "",
             full_paths,
         )
         return list(results)
 
 
-def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=False):
+def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=False, ql_extensions=QL_EXTENSIONS):
     """Lazily yields each entry's img_suffix in full_paths' own order --
     the \\r/\\n-then-image string _build_image_prefixes()'s single_line
     branch would otherwise build eagerly for every entry before
@@ -2577,7 +2656,7 @@ def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=Fal
     """
     def compute(i_and_path):
         i, p = i_and_path
-        img = build_image_prefix(p, width, height, no_sips) if os.path.isfile(p) else ""
+        img = build_image_prefix(p, width, height, no_sips, ql_extensions=ql_extensions) if os.path.isfile(p) else ""
         if not img:
             return ""
         if stacked_flags and stacked_flags[i]:
@@ -2588,7 +2667,7 @@ def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=Fal
         yield from pool.map(compute, enumerate(full_paths))
 
 
-def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, stacked_flags=None, single_line=False, no_sips=False):
+def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, stacked_flags=None, single_line=False, no_sips=False, ql_extensions=QL_EXTENSIONS):
     """-I: builds a thumbnail prefix/suffix pair for each entry.
 
     single_line (see list_target()'s scale_applies) must be true only
@@ -2653,7 +2732,7 @@ def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM
         return [""] * len(full_paths), [""] * len(full_paths), 0
     img_col_width = width + 1
     img_col_pad = " " * img_col_width
-    imgs = _build_images_parallel(full_paths, width, height, no_sips, allow_taller=single_line)
+    imgs = _build_images_parallel(full_paths, width, height, no_sips, allow_taller=single_line, ql_extensions=ql_extensions)
     img_prefixes = []
     img_suffixes = []
     for i, img in enumerate(imgs):
@@ -3020,6 +3099,17 @@ def list_target(mode, show_header, paths, opts):
 
         stacked_flags = [(img_width + text_width(i)) > term_width for i in range(len(names))]
 
+    # --ql-ext resolved once here into the single value build_image_prefix()
+    # and friends actually take: None for --ql-ext=all's "any non-image
+    # extension" sentinel, an empty set for --ql-ext=off, or
+    # QL_EXTENSIONS plus any --ql-ext=foo,bar extras otherwise.
+    if opts.ql_ext_mode == "off":
+        ql_extensions = frozenset()
+    elif opts.ql_ext_mode == "all":
+        ql_extensions = None
+    else:
+        ql_extensions = QL_EXTENSIONS | set(opts.ql_ext_extra)
+
     if scale_applies:
         # -1/-l with -I: img_prefixes here is always the same constant
         # blank pad regardless of whether a given entry actually has a
@@ -3035,7 +3125,7 @@ def list_target(mode, show_header, paths, opts):
         img_prefixes = [" " * img_col_width] * len(full_paths)
         img_suffixes = [""] * len(full_paths)
     else:
-        img_prefixes, img_suffixes, img_col_width = _build_image_prefixes(full_paths, opts.i, img_width, img_height, stacked_flags, scale_applies, opts.no_sips)
+        img_prefixes, img_suffixes, img_col_width = _build_image_prefixes(full_paths, opts.i, img_width, img_height, stacked_flags, scale_applies, opts.no_sips, ql_extensions)
 
     disp_names, hang_prefixes, suffixes, is_directories, bg_nums, dot_tagnums_list, entry_tags, namelen, plainlen = _build_entries(
         names, full_paths, sanitized_names, needs_quote, ansi_c_needed, any_quoted, opts, img_col_width
@@ -3089,7 +3179,7 @@ def list_target(mode, show_header, paths, opts):
             sys.stdout.write("\n".join(output) + "\n")
             sys.stdout.flush()
         stacked = stacked_flags[:n_entries] if stacked_flags else None
-        suffixes_stream = _stream_image_suffixes(full_paths[:n_entries], img_width, img_height, stacked, opts.no_sips)
+        suffixes_stream = _stream_image_suffixes(full_paths[:n_entries], img_width, img_height, stacked, opts.no_sips, ql_extensions)
         for line, suffix in zip(entry_lines, suffixes_stream):
             sys.stdout.write(line + suffix + "\n")
             sys.stdout.flush()
@@ -3115,7 +3205,7 @@ def list_target(mode, show_header, paths, opts):
 
 
 def print_help():
-    print(f"""Usage: {PROG} [-a] [-A] [-l] [-h] [-1] [-C] [-F] [-I] [--scale=n] [-t] [-S] [-X] [-r] [-d] [-R] [-B] [--color=when] [--theme=mode] [--tag-colors=mode] [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode] [--fg-mode=mode] [--base-fg=RRGGBB] [--quote] [--group-directories-first] [--version] [path...]
+    print(f"""Usage: {PROG} [-a] [-A] [-l] [-h] [-1] [-C] [-F] [-I] [--scale=n] [--ql-ext=spec] [-t] [-S] [-X] [-r] [-d] [-R] [-B] [--color=when] [--theme=mode] [--tag-colors=mode] [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode] [--fg-mode=mode] [--base-fg=RRGGBB] [--quote] [--group-directories-first] [--version] [path...]
 
 Options:
   -a        Show all files, including . and ..
@@ -3134,6 +3224,14 @@ Options:
             effect only in -1/-l (the only contexts -I itself is ever
             active in, since it's disabled outright on non-tty output).
             Omitting n is the same as 1. No effect without -I.
+  --ql-ext=spec
+            Adjust which extensions -I tries a Quick Look preview for,
+            beyond image files. spec is "off" (disable Quick Look
+            thumbnails), "all" (try every non-image extension, not just
+            the default Word/Excel/PowerPoint list; extension-less
+            files are still skipped), or a comma-separated list of
+            extensions to add to that default list (e.g. md,rtf). No
+            effect without -I.
   -t        Sort by modification time, newest first
   -S        Sort by file size, largest first
   -X        Sort by extension
@@ -3268,7 +3366,7 @@ MODE_OPTIONS = (
 # Long options macls.py recognizes that plain ls(1) doesn't know
 # about, used by strip_macls_only_options() below to make the plain-ls
 # fallback actually work instead of erroring out on them.
-MACLS_ONLY_LONG_OPTS = tuple(name for name, *_ in MODE_OPTIONS) + ("--quote", "--group-directories-first", "--stripe", "--base-fg", "--scale", "--no-sips")
+MACLS_ONLY_LONG_OPTS = tuple(name for name, *_ in MODE_OPTIONS) + ("--quote", "--group-directories-first", "--stripe", "--base-fg", "--scale", "--no-sips", "--ql-ext")
 
 
 def strip_macls_only_options(argv):
@@ -3393,6 +3491,42 @@ def die_invalid_scale(value):
     sys.exit(2)
 
 
+def parse_ql_ext(value):
+    """Parses --ql-ext's value into (mode, extra):
+    "off" -> ("off", ()): disables -I's Quick Look thumbnails (see
+    QL_EXTENSIONS) entirely, leaving IMAGE_EXTENSIONS files unaffected.
+    "all" -> ("all", ()): every extension not already in
+    IMAGE_EXTENSIONS (and not a "~$name.ext"-style lock file -- see
+    build_image_prefix()) becomes a Quick Look candidate, not just
+    QL_EXTENSIONS's own curated list.
+    Anything else -> ("list", extra), where extra is a tuple of the
+    comma-separated extensions in value, each normalized to lowercase
+    with a leading dot (e.g. "foo,BAR" -> (".foo", ".bar")), added on
+    top of QL_EXTENSIONS's own defaults rather than replacing them.
+    Returns None if value is empty or contains an empty entry (e.g.
+    "foo,,bar" or a trailing/leading comma)."""
+    if value == "off":
+        return "off", ()
+    if value == "all":
+        return "all", ()
+    parts = [p.strip().lower() for p in value.split(",")]
+    if not value or any(not p for p in parts):
+        return None
+    return "list", tuple(p if p.startswith(".") else f".{p}" for p in parts)
+
+
+def die_invalid_ql_ext(value):
+    """Prints a usage error for an invalid --ql-ext value and exits(2)
+    -- distinct from die_invalid_value() since --ql-ext's valid values
+    ("off", "all", or a comma-separated extension list) aren't a fixed
+    list of choices."""
+    sys.stderr.write(
+        f"{PROG}: invalid value '{value}' for --ql-ext "
+        f'(must be "off", "all", or a comma-separated list of extensions, e.g. foo,bar)\n'
+    )
+    sys.exit(2)
+
+
 def parse_options(argv):
     """Parses short options (-a -A -l -h -1 -C -F -I -t -d -B -R -S -X -r, combinable). GNU-style:
     options may be freely mixed with positional arguments in any order
@@ -3477,6 +3611,14 @@ def parse_options(argv):
             if n is None:
                 die_invalid_scale(value)
             opts.scale = n
+            i += 1
+            continue
+        if arg == "--ql-ext" or arg.startswith("--ql-ext="):
+            value = arg.split("=", 1)[1] if "=" in arg else ""
+            parsed = parse_ql_ext(value)
+            if parsed is None:
+                die_invalid_ql_ext(value)
+            opts.ql_ext_mode, opts.ql_ext_extra = parsed
             i += 1
             continue
         if arg == "--":

@@ -6,7 +6,7 @@ does and why, see [README.md](README.md).
 ## Synopsis
 
 ```
-macls.py [-I] [--scale=n] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
+macls.py [-I] [--scale=n] [--ql-ext=spec] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
           [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode]
           [--fg-mode=mode] [--base-fg=RRGGBB] [--quote]
           [--group-directories-first]
@@ -80,6 +80,20 @@ wider than the terminal.
 
 Omitting `--scale` is equivalent to `--scale=1` (the base size, one row
 tall). Has no effect without `-I`.
+
+**`--ql-ext=spec`**
+Adjusts which extensions `-I` tries a Quick Look preview for (see `-I`
+above), beyond image files, which are unaffected either way. `spec` is
+one of:
+
+| `spec` | Behavior |
+|---|---|
+| `off` | Disables Quick Look thumbnails entirely. |
+| `all` | Every extension not already an image file becomes a Quick Look candidate, not just the default Word/Excel/PowerPoint list (extension-less files are still skipped) — can be noticeably slower over a directory with many non-image files. |
+| `ext,ext,...` | A comma-separated list of extensions (with or without a leading dot, e.g. `md,rtf`) added on top of the default list, not replacing it. |
+
+Has no effect without `-I`. A value is always required (unlike
+`--scale`/`--tag`/etc., there's no bare `--ql-ext` form).
 
 **`-B`**
 Show directory names in bold.
