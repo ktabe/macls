@@ -1888,7 +1888,15 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, theme, use_tru
 def splice_colored_name(name, line, colored, surround_sgr=None):
     """Replaces the trailing name in a line of ls -l output (line) with
     colored. Also handles the symlink "name -> target" form. Returns
-    line unchanged if neither matches.
+    (result, matched): result is line unchanged if neither matches,
+    with matched False -- name wasn't found where expected, meaning
+    line isn't actually this entry's own ls -l data (e.g. names and
+    plain_l fell out of step -- see _render_long_format()'s own
+    "matched" -- rather than name containing some unanticipated shape
+    splice_colored_name() itself failed to handle). Callers that go on
+    to draw something else (like -I's thumbnail) positioned relative to
+    an assumption that line is this entry's own data should treat
+    matched False as a reason not to.
 
     surround_sgr, if given, wraps everything OTHER than colored (the
     permissions/owner/size/date part, and the " -> target" part for a
@@ -1906,7 +1914,7 @@ def splice_colored_name(name, line, colored, surround_sgr=None):
 
     n = len(name)
     if len(line) >= n and line[-n:] == name:
-        return wrap(line[: len(line) - n]) + colored
+        return wrap(line[: len(line) - n]) + colored, True
 
     marker = name + " -> "
     last = -1
@@ -1920,9 +1928,9 @@ def splice_colored_name(name, line, colored, surround_sgr=None):
     if last != -1:
         prefix = line[:last]
         rest_after_name = line[last + n :]
-        return wrap(prefix) + colored + wrap(rest_after_name)
+        return wrap(prefix) + colored + wrap(rest_after_name), True
 
-    return wrap(line)
+    return wrap(line), False
 
 
 def run_ls(flags, ls_flags, paths):
@@ -2993,6 +3001,28 @@ def _build_final_entries(names, full_paths, disp_names, hang_prefixes, suffixes,
     return final
 
 
+def _plain_l_has_total(plain_l, n_entries):
+    """Whether plain_l (a prior real `ls -l` call's output lines -- see
+    run_ls()) starts with ls's own "total" header line rather than its
+    first entry's own permissions/owner/size/date/name data.
+
+    Real ls only ever emits this line when listing a directory (never
+    for explicit non-directory file arguments -- see list_target(),
+    which always calls this with n_entries from that same, single
+    target), so its presence is inferred here purely from the line
+    count: plain_l has exactly one more line than there are entries.
+
+    This used to instead check plain_l[0].startswith("total "), which
+    silently stopped matching whenever ls's own LANG/LC_ALL differed
+    from the assumption of English output -- e.g. a Japanese locale's
+    ls -l prints "合計" ("total"'s Japanese translation), not "total"
+    -- so the header line was mistaken for entry 0's own data, and
+    every subsequent entry then got spliced (see _render_long_format())
+    against the wrong real ls -l line, one off from where it belonged.
+    """
+    return bool(plain_l) and len(plain_l) == n_entries + 1
+
+
 def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
     """Renders -l output: splices the colored name (see
     splice_colored_name()) into each of plain_l's real permissions/
@@ -3013,10 +3043,22 @@ def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
     still in the original, ungrouped order. Without this, line i's real
     ls -l data would be spliced onto the wrong (already-regrouped)
     name.
+
+    Returns (output, matched): matched[i] is whether name i was
+    actually found in plain_l[idx] (see splice_colored_name()'s own
+    "matched") -- False means idx pointed at the wrong line (names and
+    plain_l fell out of step somehow), so output[i]'s permissions/
+    owner/size/date data doesn't actually belong to this entry, even
+    though it's still included (unspliced, uncolored) rather than
+    dropped. -I's caller (list_target()) uses this to avoid drawing a
+    thumbnail (which comes from full_paths, an entirely separate,
+    always-correctly-ordered source -- see _stream_image_suffixes())
+    next to a line that isn't actually that thumbnail's own entry.
     """
     output = []
+    matched = []
     li = 0
-    if plain_l and plain_l[0].startswith("total "):
+    if _plain_l_has_total(plain_l, len(names)):
         output.append(plain_l[0])
         li = 1
     for i, name in enumerate(names):
@@ -3024,9 +3066,10 @@ def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
         if idx >= len(plain_l):
             break
         surround_sgr = stripe_sgr(opts.use_truecolor, opts.theme) if (opts.stripe and opts.use_color and i % 2 == 1) else None
-        spliced = splice_colored_name(name, plain_l[idx], final[i][len(img_prefixes[i]):], surround_sgr)
+        spliced, ok = splice_colored_name(name, plain_l[idx], final[i][len(img_prefixes[i]):], surround_sgr)
         output.append(img_prefixes[i] + spliced)
-    return output
+        matched.append(ok)
+    return output, matched
 
 
 def list_target(mode, show_header, paths, opts):
@@ -3141,7 +3184,7 @@ def list_target(mode, show_header, paths, opts):
     stacked_flags = None
     if scale_applies and scale > 1:
         if opts.l and plain_l is not None:
-            entry_lines = plain_l[1:] if plain_l and plain_l[0].startswith("total ") else plain_l
+            entry_lines = plain_l[1:] if _plain_l_has_total(plain_l, len(names)) else plain_l
 
             def text_width(i):
                 idx = order[i] if order is not None else i
@@ -3208,8 +3251,9 @@ def list_target(mode, show_header, paths, opts):
         img_prefixes, img_suffixes, mtimes, now, is_tty, opts, col_of_idx
     )
 
+    matched = None
     if opts.l:
-        lines = _render_long_format(names, plain_l, final, img_prefixes, opts, order)
+        lines, matched = _render_long_format(names, plain_l, final, img_prefixes, opts, order)
     elif multi and final:
         hang_width = 1 if (opts.quote and any_quoted) else 0
         lines = render_multi_column_layout(layout, final, plainlen, effective_stripe, opts.theme, opts.use_truecolor, hang_width)
@@ -3225,7 +3269,7 @@ def list_target(mode, show_header, paths, opts):
         # its thumbnail (if it has one) is ready, instead of blocking
         # on every thumbnail in the directory before printing anything
         # -- see _stream_image_suffixes().
-        has_total = bool(plain_l) and plain_l[0].startswith("total ")
+        has_total = _plain_l_has_total(plain_l, len(names))
         header_lines = lines[:1] if has_total else []
         entry_lines = lines[1:] if has_total else lines
         n_entries = len(entry_lines)
@@ -3235,7 +3279,20 @@ def list_target(mode, show_header, paths, opts):
             sys.stdout.flush()
         stacked = stacked_flags[:n_entries] if stacked_flags else None
         suffixes_stream = _stream_image_suffixes(full_paths[:n_entries], img_width, img_height, stacked, opts.no_sips, ql_extensions)
-        for line, suffix in zip(entry_lines, suffixes_stream):
+        for i, (line, suffix) in enumerate(zip(entry_lines, suffixes_stream)):
+            # matched (opts.l only -- see _render_long_format()) is
+            # False for an entry whose real ls -l data couldn't be
+            # matched up by name, meaning line isn't actually this
+            # entry's own text. full_paths (suffix's own source -- see
+            # _stream_image_suffixes()) is never subject to that same
+            # mismatch, so without this check a thumbnail could end up
+            # drawn correctly, but next to the wrong entry's line --
+            # exactly the failure mode that motivated this check (see
+            # the "total" line detection fix this guards against
+            # regressing). Safer to show no thumbnail at all here than
+            # a technically-correct one in a visibly wrong place.
+            if matched is not None and (i >= len(matched) or not matched[i]):
+                suffix = ""
             sys.stdout.write(line + suffix + "\n")
             sys.stdout.flush()
     else:
