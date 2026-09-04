@@ -49,7 +49,7 @@ Finderでファイルにタグを付けると、ターミナルにもそれが�
 
 `-I` を指定すると、画像ファイル(`.png`、`.jpeg`、`.pdf` など)の名前の横に、iTerm2のインライン画像プロトコルを使ってサムネイルが表示されます。`open` や別のビューアーは不要です。Word/Excel/PowerPointファイル(`.docx`/`.xlsx`/`.pptx`、および旧形式の`.doc`/`.xls`/`.ppt`)もmacOSのQuick Look経由で実際のプレビューが表示されます。
 
-`--scale` オプションでサムネイルを拡大できますが、これが効くのは `-1` または `-l` のときだけで、複数列表示では無視されます。
+`--scale` オプション（`-2`のように`-N`と省略も可能）でサムネイルを拡大できますが、これが効くのは `-1` または `-l` のときだけで、複数列表示では無視されます。
 
 <p align="center">
   <img src="docs/screenshots/macls-images.png" alt="Alternating column stripe background" width="520">

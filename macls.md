@@ -6,7 +6,7 @@ does and why, see [README.md](README.md).
 ## Synopsis
 
 ```
-macls.py [-I] [--scale=n] [--ql-ext=spec] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
+macls.py [-I] [--scale=n | -n] [--ql-ext=spec] [-B] [--color=when] [--theme=mode] [--tag-colors=mode]
           [--columns=mode] [--tag=mode] [--stripe] [--suffix-color=mode]
           [--fg-mode=mode] [--base-fg=RRGGBB] [--quote]
           [--group-directories-first]
@@ -80,6 +80,11 @@ wider than the terminal.
 
 Omitting `--scale` is equivalent to `--scale=1` (the base size, one row
 tall). Has no effect without `-I`.
+
+`-N` (`N` a positive integer other than 1) is shorthand for `--scale=N`
+— e.g. `-2` is the same as `--scale=2`. `-1` itself keeps its own
+existing meaning (single-column output) rather than becoming
+`--scale=1`, which `--scale`'s own default already is.
 
 **`--ql-ext=spec`**
 Adjusts which extensions `-I` tries a Quick Look preview for (see `-I`
