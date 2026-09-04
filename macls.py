@@ -22,7 +22,7 @@ DESCRIPTION
     Finder tagging (_kMDItemUserTags). If an unsupported option is
     passed, macls.py falls back to the standard `/bin/ls` command.
 
-    With `-I` option, image files such as .jpg, .png and .pdf are displayed with a thumbnail to the left of the name, using iTerm2's inline image protocol (OSC 1337). This feature is ignored outside iTerm2 or when standard output is not a terminal.
+    With `-I` option, image files such as .jpg, .png and .pdf are displayed with a thumbnail to the left of the name, using iTerm2's inline image protocol (OSC 1337), also supported by WezTerm. This feature is ignored outside iTerm2/WezTerm or when standard output is not a terminal.
 
     When standard output is a terminal, each entry's name is wrapped in an OSC 8 hyperlink escape sequence pointing at its file:// URL. Terminals that support OSC 8 (including iTerm2) let the name be clicked; in iTerm2 specifically, Cmd-click on a file:// link reveals/opens the target in Finder via Semantic History. Terminals without OSC 8 support just show the name as plain text, since they ignore the escape sequences.
 
@@ -44,9 +44,10 @@ DESCRIPTION
                 .docx/.xlsx/.pptx and the legacy .doc/.xls/.ppt -- an
                 actual rendered first-page/sheet/slide preview, not a
                 generic icon) to the left of the name, using iTerm2's
-                inline image protocol (OSC 1337). Ignored outside
-                iTerm2, or when standard output is not a terminal. The
-                thumbnail's width is fixed (see --scale); for
+                inline image protocol (OSC 1337), also supported by
+                WezTerm. Ignored outside iTerm2/WezTerm, or when
+                standard output is not a terminal. The thumbnail's
+                width is fixed (see --scale); for
                 PNG/GIF/BMP/JPEG (the formats whose pixel dimensions
                 can be read with a small amount of standard-library-only
                 header parsing -- see get_image_pixel_size()), its
@@ -1273,12 +1274,13 @@ def supports_truecolor():
 
 
 def iterm2_supported():
-    """Whether running in a terminal (iTerm2) that supports the inline
-    image protocol (OSC 1337). Also checks LC_TERMINAL, which iTerm2
-    sets, for cases like over SSH where the terminal app can't be
-    detected directly. Returns a bool."""
+    """Whether running in a terminal that supports iTerm2's inline
+    image protocol (OSC 1337) -- iTerm2 itself, or WezTerm, which also
+    implements it. Also checks LC_TERMINAL, which iTerm2 (but not
+    WezTerm) sets, for cases like over SSH where the terminal app can't
+    be detected directly via TERM_PROGRAM. Returns a bool."""
     return (
-        os.environ.get("TERM_PROGRAM") == "iTerm.app"
+        os.environ.get("TERM_PROGRAM") in ("iTerm.app", "WezTerm")
         or os.environ.get("LC_TERMINAL") == "iTerm2"
     )
 
@@ -3270,9 +3272,9 @@ Options:
   -C        Force multi-column output, even when standard output isn't
             a terminal
   -F        Append entry type indicators (/ @ * = |)
-  -I        Show image thumbnails using iTerm2's inline image protocol.
-            Ignored outside iTerm2, or when standard output isn't a
-            terminal.
+  -I        Show image thumbnails using iTerm2's inline image protocol
+            (also supported by WezTerm). Ignored outside iTerm2/WezTerm,
+            or when standard output isn't a terminal.
   --scale=n Multiply the -I thumbnail's width and height by n. Has an
             effect only in -1/-l (the only contexts -I itself is ever
             active in, since it's disabled outright on non-tty output).
@@ -3829,7 +3831,7 @@ def main():
     if opts.i and not sys.stdout.isatty():
         opts.i = False
     elif opts.i and not iterm2_supported():
-        print(f"{PROG}: -I requires iTerm2; disabling thumbnails", file=sys.stderr)
+        print(f"{PROG}: -I requires iTerm2 or WezTerm; disabling thumbnails", file=sys.stderr)
         opts.i = False
 
     # From here, handle the (possibly multiple) arguments. As with real
