@@ -588,18 +588,26 @@ from typing import Optional
 FINDER_TAG_ATTR = "com.apple.metadata:_kMDItemUserTags"
 FINDER_TAG_ATTR_BYTES = FINDER_TAG_ATTR.encode("utf-8")
 
-# macOS's getxattr(2) has a 6-argument signature, unlike Linux.
-# options=0 follows symlink targets, matching xattr(1)'s default.
-_GETXATTR = ctypes.CDLL(None, use_errno=True).getxattr
-_GETXATTR.argtypes = [
-    ctypes.c_char_p,
-    ctypes.c_char_p,
-    ctypes.c_void_p,
-    ctypes.c_size_t,
-    ctypes.c_uint32,
-    ctypes.c_int,
-]
-_GETXATTR.restype = ctypes.c_ssize_t
+# macOS's getxattr(2) has a 6-argument signature, unlike Linux -- so
+# this binding (and Finder tag support built on it, see
+# get_finder_tags()) is macOS-only. ctypes.CDLL(None) (dlopen(NULL), a
+# handle to the current process, used here to reach the getxattr(2)
+# already linked into python3 itself) is a POSIX-only construct; on
+# Windows, CDLL(None) fails outright (there's no such handle), so this
+# whole binding is skipped there -- _GETXATTR stays None, and
+# get_finder_tags() returns no tags rather than touching it.
+_GETXATTR = None
+if sys.platform == "darwin":
+    _GETXATTR = ctypes.CDLL(None, use_errno=True).getxattr
+    _GETXATTR.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    _GETXATTR.restype = ctypes.c_ssize_t
 
 # For -I (image thumbnails). Follows imgls's (bundled with iTerm2)
 # default settings: a height of 1 cell (with the matching narrow width
@@ -1036,7 +1044,13 @@ def get_finder_tags(path):
     libc's getxattr(2) directly. The first call gets the value's size,
     and the second reads the binary plist. No external process is
     launched.
+
+    Finder tags are a macOS-only concept -- on any other platform,
+    _GETXATTR is None (see its own definition) and this returns []
+    unconditionally, the same as if the lookup had failed.
     """
+    if _GETXATTR is None:
+        return []
     try:
         encoded_path = os.fsencode(path)
         size = _GETXATTR(
@@ -1911,11 +1925,28 @@ def splice_colored_name(name, line, colored, surround_sgr=None):
 
 def run_ls(flags, ls_flags, paths):
     """Shells out to real ls(1) with flags + ls_flags + paths and
-    returns its stdout as a list of lines (no trailing empty line)."""
+    returns its stdout as a list of lines (no trailing empty line).
+
+    macls.py deliberately delegates directory enumeration and -l
+    formatting to ls(1) itself (see the module docstring's
+    IMPLEMENTATION NOTES) rather than reimplementing it, so there's no
+    fallback if ls itself can't be found on PATH -- exits(1) with a
+    one-line message instead of letting subprocess.run()'s own
+    FileNotFoundError surface as a raw traceback.
+    """
     cmd = ["ls"] + flags + ls_flags + ["--"] + list(paths)
-    result = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-    )
+    try:
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+    except FileNotFoundError:
+        sys.stderr.write(
+            f"{PROG}: 'ls' not found on PATH -- macls.py shells out to the "
+            "real ls(1) for directory listing and -l formatting and can't "
+            "run without it. On Windows, install Coreutils for Windows "
+            "(or use WSL) and make sure ls.exe is on PATH.\n"
+        )
+        sys.exit(1)
     text = result.stdout.decode("utf-8", errors="surrogateescape")
     lines = text.split("\n")
     if lines and lines[-1] == "":
@@ -3577,6 +3608,10 @@ def parse_options(argv):
 
     Returns (opts, positional): an Options instance and the list of
     positional (non-option) arguments, in the order they were given.
+    On Windows, each positional argument has a trailing '"' stripped
+    (see the comment right before the return statement below) --
+    harmless everywhere else, since '"' can't legally appear in a
+    Windows path at all, let alone at the end of one.
     """
     opts = Options(color=pre_scan_opt_color(argv))
     positional = []
@@ -3715,6 +3750,23 @@ def parse_options(argv):
                 argv_fb, env_fb = plain_ls_fallback_argv_env(opts.color)
                 os.execvpe("ls", argv_fb + strip_macls_only_options(argv), env_fb)
         i += 1
+    if sys.platform == "win32":
+        # A path argument tab-completed by PowerShell with a trailing
+        # "\" (e.g. a directory: 'C:\Program Files\') gets mangled by
+        # the time it reaches argv: PowerShell has to serialize it into
+        # one double-quoted Win32 command-line string to launch an
+        # external executable like python.exe, and the C-runtime-style
+        # parser that reconstructs argv from that string treats a
+        # backslash immediately before the closing '"' as escaping a
+        # literal '"' rather than ending the argument -- so the
+        # trailing "\" is silently swallowed and a literal '"' is
+        # appended instead. '"' is one of Windows' own reserved
+        # filename characters (< > : " / \ | ? *), so it can never be
+        # part of a real path, let alone its last character -- stripping
+        # a trailing one here is always safe and recovers a working
+        # path (Windows treats a directory path with or without a
+        # trailing separator the same way).
+        positional = [p[:-1] if p.endswith('"') else p for p in positional]
     return opts, positional
 
 
