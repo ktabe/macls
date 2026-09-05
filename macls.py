@@ -1885,7 +1885,7 @@ def build_colored_name(name, mtime, now, use_color, bold, suffix, theme, use_tru
     return out, extra
 
 
-def splice_colored_name(name, line, colored, surround_sgr=None):
+def splice_colored_name(name, line, colored, surround_sgr=None, is_tty=False, opt_quote=False):
     """Replaces the trailing name in a line of ls -l output (line) with
     colored. Also handles the symlink "name -> target" form. Returns
     (result, matched): result is line unchanged if neither matches,
@@ -1906,6 +1906,19 @@ def splice_colored_name(name, line, colored, surround_sgr=None):
     own color already (Finder tag or stripe, from build_colored_name()),
     and nesting a second background under/over it would fight with its
     own reset.
+
+    is_tty/opt_quote: unlike name (already sanitized/quoted well before
+    this is ever called -- see _compute_quoting()), a symlink's target
+    text comes straight from line, unprocessed, since only
+    _render_long_format()'s caller ever sees it. A raw control
+    character there (e.g. a symlink pointing at a name containing a
+    literal newline) would otherwise reach the terminal unsanitized,
+    corrupting the display the exact same way an entry's own
+    unsanitized name would -- so it gets the same treatment here:
+    sanitize_display_name()'s '?' replacement when is_tty, or, when
+    opt_quote is also set and the target actually needs it,
+    ansi_c_quote()'s $'...' instead (matching --quote's own treatment
+    of a control-character name -- see _compute_quoting()).
     """
     def wrap(s):
         if not s or surround_sgr is None:
@@ -1928,14 +1941,97 @@ def splice_colored_name(name, line, colored, surround_sgr=None):
     if last != -1:
         prefix = line[:last]
         rest_after_name = line[last + n :]
+        arrow = " -> "
+        if is_tty and rest_after_name.startswith(arrow):
+            target = rest_after_name[len(arrow) :]
+            if opt_quote and needs_ansi_c_quoting(target):
+                target = ansi_c_quote(target)
+            else:
+                target = sanitize_display_name(target)
+            rest_after_name = arrow + target
         return wrap(prefix) + colored + wrap(rest_after_name), True
 
     return wrap(line), False
 
 
+# run_ls() always adds this to force real ls(1) to escape any
+# nongraphic byte (and its own escape marker, backslash) in a name,
+# rather than emitting it raw -- notably including a literal embedded
+# newline, which run_ls() would otherwise be unable to tell apart from
+# its own newline-per-entry output format, splitting that one entry
+# into two bogus ones. macOS's BSD ls spells this -B; GNU coreutils'
+# ls (Linux, WSL, Coreutils for Windows) uses that same letter for
+# something else entirely (--ignore-backups, dropping "*~" files from
+# the listing) and spells this -b (--escape) instead -- so which one
+# is passed depends on the platform, same reasoning as -X's own
+# platform-specific meaning (see _build_ls_flags()).
+#
+# Confirmed (macOS's own ls, and GNU coreutils' ls via Homebrew's gls)
+# that neither form of escaping touches a valid multibyte UTF-8
+# character -- only genuinely nongraphic bytes and a literal backslash
+# get escaped -- so this has no visible effect on any name that didn't
+# need it in the first place. See _unescape_ls_name() for reversing it.
+LS_ESCAPE_FLAG = "-B" if sys.platform == "darwin" else "-b"
+
+# The single-letter escapes GNU coreutils' ls -b (--escape) uses for
+# these specific bytes, backslash (its own escape marker) included --
+# used by _unescape_ls_name() to reverse them. Never produced by
+# macOS's BSD ls -B, which always uses \NNN octal instead, even for
+# these same bytes (confirmed: newline comes back as \012, backslash
+# as \134) -- but since BSD's octal escapes always put a digit right
+# after the backslash, never one of these letters, checking for both
+# forms unconditionally is unambiguous regardless of which ls produced
+# the input.
+_LS_ESCAPE_C_STYLE = {
+    "a": 0x07, "b": 0x08, "f": 0x0C, "n": 0x0A,
+    "r": 0x0D, "t": 0x09, "v": 0x0B, "\\": 0x5C,
+}
+
+
+def _unescape_ls_name(s):
+    """Reverses LS_ESCAPE_FLAG's escaping of nongraphic bytes and the
+    backslash escape marker itself in one line of ls(1) output (a
+    whole -1 entry, or a whole -l line, permissions/owner/size/date
+    prefix included -- never itself containing a backslash, so
+    unescaping the entire line rather than just the trailing name is
+    safe and avoids needing to locate the name first).
+
+    Works byte-by-byte (re-encoding each literal, unescaped stretch
+    back to UTF-8 as it goes) rather than character-by-character, since
+    an escaped byte can be any value 0-255, not just ASCII -- ls itself
+    never escapes a valid multibyte UTF-8 character (see
+    LS_ESCAPE_FLAG), so in practice this only ever reconstructs plain
+    ASCII control bytes or backslash, but decoding the assembled result
+    with errors="surrogateescape" (matching run_ls()'s own decoding)
+    keeps it correct even for a byte that isn't valid UTF-8 on its own.
+    """
+    if "\\" not in s:
+        return s
+    out = bytearray()
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = s[i + 1]
+            if nxt in _LS_ESCAPE_C_STYLE:
+                out.append(_LS_ESCAPE_C_STYLE[nxt])
+                i += 2
+                continue
+            if i + 3 < n and all(c in "01234567" for c in s[i + 1 : i + 4]):
+                out.append(int(s[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+        out.extend(ch.encode("utf-8", "surrogateescape"))
+        i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def run_ls(flags, ls_flags, paths):
-    """Shells out to real ls(1) with flags + ls_flags + paths and
-    returns its stdout as a list of lines (no trailing empty line).
+    """Shells out to real ls(1) with flags + ls_flags + LS_ESCAPE_FLAG
+    + paths and returns its stdout as a list of lines (no trailing
+    empty line), each with LS_ESCAPE_FLAG's own escaping reversed (see
+    _unescape_ls_name()) so callers see the same raw names/lines this
+    always returned before LS_ESCAPE_FLAG was added.
 
     macls.py deliberately delegates directory enumeration and -l
     formatting to ls(1) itself (see the module docstring's
@@ -1944,7 +2040,7 @@ def run_ls(flags, ls_flags, paths):
     one-line message instead of letting subprocess.run()'s own
     FileNotFoundError surface as a raw traceback.
     """
-    cmd = ["ls"] + flags + ls_flags + ["--"] + list(paths)
+    cmd = ["ls"] + flags + ls_flags + [LS_ESCAPE_FLAG] + ["--"] + list(paths)
     try:
         result = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -1961,7 +2057,7 @@ def run_ls(flags, ls_flags, paths):
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    return lines
+    return [_unescape_ls_name(line) for line in lines]
 
 
 def get_terminal_width():
@@ -3023,7 +3119,7 @@ def _plain_l_has_total(plain_l, n_entries):
     return bool(plain_l) and len(plain_l) == n_entries + 1
 
 
-def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
+def _render_long_format(names, plain_l, final, img_prefixes, opts, is_tty, order=None):
     """Renders -l output: splices the colored name (see
     splice_colored_name()) into each of plain_l's real permissions/
     owner/size/date lines (a prior `ls -l` call -- see list_target(),
@@ -3035,6 +3131,10 @@ def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
     a thumbnail's own carriage-return-then-image sequence rides along
     with the splice and still lands at the very end of the rendered
     line, right after the real permissions/owner/size/date/name text.
+
+    is_tty is forwarded to splice_colored_name(), which needs it to
+    decide whether to sanitize/quote a symlink's target text (see its
+    own docstring).
 
     order, when given (opts.group_dirs_first), is the permutation
     list_target() already applied to names/full_paths to group
@@ -3066,7 +3166,7 @@ def _render_long_format(names, plain_l, final, img_prefixes, opts, order=None):
         if idx >= len(plain_l):
             break
         surround_sgr = stripe_sgr(opts.use_truecolor, opts.theme) if (opts.stripe and opts.use_color and i % 2 == 1) else None
-        spliced, ok = splice_colored_name(name, plain_l[idx], final[i][len(img_prefixes[i]):], surround_sgr)
+        spliced, ok = splice_colored_name(name, plain_l[idx], final[i][len(img_prefixes[i]):], surround_sgr, is_tty, opts.quote)
         output.append(img_prefixes[i] + spliced)
         matched.append(ok)
     return output, matched
@@ -3253,7 +3353,7 @@ def list_target(mode, show_header, paths, opts):
 
     matched = None
     if opts.l:
-        lines, matched = _render_long_format(names, plain_l, final, img_prefixes, opts, order)
+        lines, matched = _render_long_format(names, plain_l, final, img_prefixes, opts, is_tty, order)
     elif multi and final:
         hang_width = 1 if (opts.quote and any_quoted) else 0
         lines = render_multi_column_layout(layout, final, plainlen, effective_stripe, opts.theme, opts.use_truecolor, hang_width)
