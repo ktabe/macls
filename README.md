@@ -120,6 +120,7 @@ It works by just dropping `macls.py` into a directory in your PATH.
 
 - Python 3.9+ (recent macOS's `/usr/bin/python3` should work)
 - [iTerm2](https://iterm2.com/) or [WezTerm](https://wezterm.org/) recommended, for `-I` thumbnails and clickable filenames
+- On Linux, [ImageMagick](https://imagemagick.org/) (`magick` or `convert` on `PATH`) is optional but recommended for `-I`: it's used to shrink large thumbnails before sending them, the way `sips` does on macOS. Without it, `-I` still works, just slower for large images.
 
 ## Install
 

@@ -94,6 +94,7 @@ iTerm2では、ファイル名はハイパーリンクであることを示す�
 
 - Python 3.9+(最近のmacOSでは標準の `/usr/bin/python3` で動作するはずです)
 - [iTerm2](https://iterm2.com/) または [WezTerm](https://wezterm.org/) 推奨(`-I` サムネイルとクリック可能なファイル名のため)
+- Linuxでは、[ImageMagick](https://imagemagick.org/)(`magick`または`convert`が`PATH`上にあること)が`-I`のために任意でおすすめです。macOSの`sips`と同様、大きな画像を送信前に縮小するのに使われます。無くても`-I`自体は動きますが、大きな画像では遅くなります。
 
 ## インストール
 
