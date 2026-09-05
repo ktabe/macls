@@ -526,8 +526,19 @@ IMPLEMENTATION NOTES
     the full-resolution original just for iTerm2 to downscale it on
     arrival, so shrinking it locally first (to a size still generous
     enough to stay sharp on a HiDPI display, see
-    SIPS_TARGET_PX_PER_CELL) fixes that. No dependency is added: sips
-    ships with macOS itself. See _sips_shrink_image().
+    SIPS_TARGET_PX_PER_CELL) fixes that. No dependency is added for
+    this: sips ships with macOS itself. See _sips_shrink_image().
+
+    sips(1) is macOS-only, so on any other platform (Linux, WSL,
+    Coreutils for Windows -- wherever -I's own WezTerm support applies
+    but sips doesn't) the same shrink is instead attempted via
+    ImageMagick's magick(1) (v7+) or convert(1) (v6, or magick's own
+    legacy alias), whichever is found on PATH -- an actual (optional)
+    dependency this time, since unlike sips it doesn't ship with the
+    OS, but shrinking is still purely best-effort: with neither
+    installed, -I falls back to sending the original file unshrunk,
+    same as any other shrink failure. See _magick_shrink_image() and
+    _shrink_image_external(), which tries sips first and this second.
 
     -I also thumbnails Word/Excel/PowerPoint documents, both the modern
     Office Open XML formats and the legacy binary ones (see
@@ -571,6 +582,7 @@ IMPLEMENTATION NOTES
 import base64
 import concurrent.futures
 import ctypes
+import functools
 import locale
 import os
 import plistlib
@@ -1461,6 +1473,101 @@ def _sips_shrink_image(data, ext, max_px):
                 pass
 
 
+@functools.lru_cache(maxsize=1)
+def _magick_tool():
+    """Which of magick(1) (ImageMagick v7+) or convert(1) (v6, or
+    magick's own legacy alias) is on PATH -- None if neither is.
+    Cached (lru_cache, thread-safe -- see _build_images_parallel()/
+    _stream_image_suffixes(), which call _magick_shrink_image() on a
+    thread pool) since PATH and installed tools don't change mid-run,
+    so there's no reason for shutil.which()'s own directory-by-
+    directory PATH scan to repeat on every image needing a shrink,
+    potentially many times per directory listing.
+    """
+    return shutil.which("magick") or shutil.which("convert")
+
+
+def _magick_shrink_image(data, ext, max_px):
+    """Best-effort shrink of image file contents data (extension ext)
+    to at most max_px on its longest side, by shelling out to
+    ImageMagick's magick(1) (v7+) or convert(1) (v6, or magick's own
+    legacy alias) -- whichever is found first on PATH. This is
+    _sips_shrink_image()'s counterpart for a platform without sips(1)
+    (see _shrink_image_external(), which tries that one first and this
+    one second), mirroring its contract as closely as ImageMagick's own
+    equivalent options allow: returns the shrunk file's bytes (always
+    re-encoded as JPEG, at SIPS_JPEG_QUALITY, and flattened against a
+    white background -- see _sips_shrink_image()'s own docstring for
+    why JPEG/flattening), or None on any failure (neither magick nor
+    convert on PATH, an unsupported/corrupt input, a timeout, ...), in
+    which case the caller falls back to sending data unshrunk, same as
+    _sips_shrink_image()'s own failure case.
+
+    Like _sips_shrink_image(), reads/writes via temporary files rather
+    than stdin/stdout, since PDF (one of IMAGE_EXTENSIONS, and always
+    routed through here regardless of size -- see
+    SIPS_ALWAYS_CONVERT_EXTENSIONS) needs a real input filename with
+    the right extension for ImageMagick's own format dispatch (and its
+    Ghostscript delegate) to recognize it; "[0]" appended to that
+    filename selects just its first page, matching sips's own
+    single-page PDF rasterization.
+
+    Many Linux distros' default ImageMagick security policy
+    (policy.xml) disables its PDF/PostScript delegate outright (after
+    past Ghostscript CVEs) -- indistinguishable here from any other
+    failure (just a non-zero exit), so that's one more case this
+    returns None for, same as a missing Ghostscript install would be.
+    """
+    tool = _magick_tool()
+    if tool is None:
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as in_f:
+            in_f.write(data)
+            in_path = in_f.name
+    except OSError:
+        return None
+    out_path = in_path + ".out.jpg"
+    try:
+        input_arg = f"{in_path}[0]" if ext in SIPS_ALWAYS_CONVERT_EXTENSIONS else in_path
+        result = subprocess.run(
+            [
+                tool, input_arg,
+                "-resize", f"{max_px}x{max_px}",
+                "-background", "white", "-flatten",
+                "-quality", str(SIPS_JPEG_QUALITY),
+                out_path,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        with open(out_path, "rb") as out_f:
+            return out_f.read()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        for p in (in_path, out_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _shrink_image_external(data, ext, max_px):
+    """Tries every locally-available external shrink backend in turn,
+    for build_image_prefix()/_qlmanage_thumbnail(): sips(1) first (see
+    _sips_shrink_image() -- macOS-only, but harmless to try on any
+    platform, since a missing binary is just one more failure case it
+    already handles by returning None), then ImageMagick's magick(1)/
+    convert(1) (see _magick_shrink_image() -- the usual fallback on
+    Linux, where sips doesn't exist). Returns the first one that
+    succeeds, or None if neither is available (or installed) or both
+    fail, in which case the caller sends the original file unshrunk.
+    """
+    return _sips_shrink_image(data, ext, max_px) or _magick_shrink_image(data, ext, max_px)
+
+
 def _qlmanage_thumbnail(path, max_px):
     """Best-effort thumbnail for a QL_EXTENSIONS file via macOS's
     built-in Quick Look, shelled out to via qlmanage(1) -- the same
@@ -1504,7 +1611,7 @@ def _qlmanage_thumbnail(path, max_px):
     return _sips_shrink_image(png_data, ".png", max_px)
 
 
-def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_sips=False, allow_taller=True, ql_extensions=QL_EXTENSIONS):
+def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_thumb_shrink=False, allow_taller=True, ql_extensions=QL_EXTENSIONS):
     """Returns the escape sequence that renders the image at path as a
     thumbnail of `width` cells wide using iTerm2's inline image
     protocol (OSC 1337).
@@ -1521,10 +1628,11 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_
     be True (the default) for -1/-l, the only contexts a taller
     thumbnail is safe in (see _build_image_prefixes()'s own docstring).
 
-    no_sips (see --no-sips) skips the sips(1)-based shrink step below
-    entirely, sending the source file at its original resolution
-    regardless of size -- the pre-sips behavior, kept only for
-    comparing/debugging sips's own effect.
+    no_thumb_shrink (see --no-thumb-shrink) skips the external shrink
+    step below entirely (sips and, on a platform without it,
+    magick(1)/convert(1) -- see _shrink_image_external()), sending the
+    source file at its original resolution regardless of size -- the
+    pre-sips behavior, kept only for comparing/debugging its effect.
 
     For the 4 formats get_image_pixel_size() can read (PNG/GIF/BMP/
     JPEG), the height actually used is computed from the image's own
@@ -1601,11 +1709,11 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_
 
     if is_ql:
         # No "send the original file" fallback makes sense here (an
-        # OSC 1337 client can't render a .docx), so --no-sips -- which
+        # OSC 1337 client can't render a .docx), so --no-thumb-shrink -- which
         # exists to compare against not shrinking an image at all --
         # just disables Office thumbnails outright instead, and any
         # qlmanage/sips failure means no thumbnail for this entry.
-        if no_sips:
+        if no_thumb_shrink:
             return ""
         data = _qlmanage_thumbnail(path, max_px)
         if not data:
@@ -1621,8 +1729,8 @@ def build_image_prefix(path, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, no_
             return ""
 
         should_shrink = ext in SIPS_ALWAYS_CONVERT_EXTENSIONS or len(data) > SIPS_RESIZE_THRESHOLD_BYTES
-        if not no_sips and should_shrink and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
-            shrunk = _sips_shrink_image(data, ext, max_px)
+        if not no_thumb_shrink and should_shrink and ext not in SIPS_RESIZE_SKIP_EXTENSIONS:
+            shrunk = _shrink_image_external(data, ext, max_px)
             if shrunk:
                 data = shrunk
                 ext = ".jpg"
@@ -2632,10 +2740,12 @@ class Options:
     argument (date_color_rgb(), stripe_sgr(), etc.) expects that
     resolved value, never "auto".
 
-    no_sips mirrors --no-sips, an undocumented/hidden flag (not in
-    print_help(), macls.md, or the module docstring's own option list)
-    that disables -I's sips(1)-based thumbnail shrinking -- see its own
-    handling in parse_options().
+    no_thumb_shrink mirrors --no-thumb-shrink, an undocumented/hidden
+    flag (not in print_help(), macls.md, or the module docstring's own
+    option list) that disables -I's external thumbnail shrinking,
+    sips(1) and its magick(1)/convert(1) fallback alike (see
+    _shrink_image_external()) -- see its own handling in
+    parse_options().
 
     ql_ext_mode/ql_ext_extra mirror --ql-ext, parsed by parse_ql_ext():
     mode is "default" (QL_EXTENSIONS as-is, when --ql-ext wasn't
@@ -2663,7 +2773,7 @@ class Options:
     quote: bool = False
     group_dirs_first: bool = False
     stripe: bool = False
-    no_sips: bool = False
+    no_thumb_shrink: bool = False
     ql_ext_mode: str = "default"
     ql_ext_extra: tuple = ()
     color: str = "auto"
@@ -2756,7 +2866,7 @@ def _fetch_mtimes(full_paths, use_color):
 IMAGE_THUMBNAIL_WORKERS = 8
 
 
-def _build_images_parallel(full_paths, width, height, no_sips=False, allow_taller=True, ql_extensions=QL_EXTENSIONS):
+def _build_images_parallel(full_paths, width, height, no_thumb_shrink=False, allow_taller=True, ql_extensions=QL_EXTENSIONS):
     """Returns build_image_prefix()'s result for each of full_paths, in
     the same order, computed concurrently via a thread pool.
 
@@ -2778,16 +2888,16 @@ def _build_images_parallel(full_paths, width, height, no_sips=False, allow_talle
     """
     non_dirs = [p for p in full_paths if os.path.isfile(p)]
     if len(non_dirs) <= 1:
-        return [build_image_prefix(p, width, height, no_sips, allow_taller, ql_extensions) if os.path.isfile(p) else "" for p in full_paths]
+        return [build_image_prefix(p, width, height, no_thumb_shrink, allow_taller, ql_extensions) if os.path.isfile(p) else "" for p in full_paths]
     with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_THUMBNAIL_WORKERS) as pool:
         results = pool.map(
-            lambda p: build_image_prefix(p, width, height, no_sips, allow_taller, ql_extensions) if os.path.isfile(p) else "",
+            lambda p: build_image_prefix(p, width, height, no_thumb_shrink, allow_taller, ql_extensions) if os.path.isfile(p) else "",
             full_paths,
         )
         return list(results)
 
 
-def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=False, ql_extensions=QL_EXTENSIONS):
+def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_thumb_shrink=False, ql_extensions=QL_EXTENSIONS):
     """Lazily yields each entry's img_suffix in full_paths' own order --
     the \\r/\\n-then-image string _build_image_prefixes()'s single_line
     branch would otherwise build eagerly for every entry before
@@ -2815,7 +2925,7 @@ def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=Fal
     """
     def compute(i_and_path):
         i, p = i_and_path
-        img = build_image_prefix(p, width, height, no_sips, ql_extensions=ql_extensions) if os.path.isfile(p) else ""
+        img = build_image_prefix(p, width, height, no_thumb_shrink, ql_extensions=ql_extensions) if os.path.isfile(p) else ""
         if not img:
             return ""
         if stacked_flags and stacked_flags[i]:
@@ -2826,7 +2936,7 @@ def _stream_image_suffixes(full_paths, width, height, stacked_flags, no_sips=Fal
         yield from pool.map(compute, enumerate(full_paths))
 
 
-def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, stacked_flags=None, single_line=False, no_sips=False, ql_extensions=QL_EXTENSIONS):
+def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM_IMG_HEIGHT, stacked_flags=None, single_line=False, no_thumb_shrink=False, ql_extensions=QL_EXTENSIONS):
     """-I: builds a thumbnail prefix/suffix pair for each entry.
 
     single_line (see list_target()'s scale_applies) must be true only
@@ -2891,7 +3001,7 @@ def _build_image_prefixes(full_paths, opt_i, width=ITERM_IMG_WIDTH, height=ITERM
         return [""] * len(full_paths), [""] * len(full_paths), 0
     img_col_width = width + 1
     img_col_pad = " " * img_col_width
-    imgs = _build_images_parallel(full_paths, width, height, no_sips, allow_taller=single_line, ql_extensions=ql_extensions)
+    imgs = _build_images_parallel(full_paths, width, height, no_thumb_shrink, allow_taller=single_line, ql_extensions=ql_extensions)
     img_prefixes = []
     img_suffixes = []
     for i, img in enumerate(imgs):
@@ -3323,7 +3433,7 @@ def list_target(mode, show_header, paths, opts):
         img_prefixes = [" " * img_col_width] * len(full_paths)
         img_suffixes = [""] * len(full_paths)
     else:
-        img_prefixes, img_suffixes, img_col_width = _build_image_prefixes(full_paths, opts.i, img_width, img_height, stacked_flags, scale_applies, opts.no_sips, ql_extensions)
+        img_prefixes, img_suffixes, img_col_width = _build_image_prefixes(full_paths, opts.i, img_width, img_height, stacked_flags, scale_applies, opts.no_thumb_shrink, ql_extensions)
 
     disp_names, hang_prefixes, suffixes, is_directories, bg_nums, dot_tagnums_list, entry_tags, namelen, plainlen = _build_entries(
         names, full_paths, sanitized_names, needs_quote, ansi_c_needed, any_quoted, opts, img_col_width
@@ -3378,7 +3488,7 @@ def list_target(mode, show_header, paths, opts):
             sys.stdout.write("\n".join(output) + "\n")
             sys.stdout.flush()
         stacked = stacked_flags[:n_entries] if stacked_flags else None
-        suffixes_stream = _stream_image_suffixes(full_paths[:n_entries], img_width, img_height, stacked, opts.no_sips, ql_extensions)
+        suffixes_stream = _stream_image_suffixes(full_paths[:n_entries], img_width, img_height, stacked, opts.no_thumb_shrink, ql_extensions)
         for i, (line, suffix) in enumerate(zip(entry_lines, suffixes_stream)):
             # matched (opts.l only -- see _render_long_format()) is
             # False for an entry whose real ls -l data couldn't be
@@ -3581,7 +3691,7 @@ MODE_OPTIONS = (
 # Long options macls.py recognizes that plain ls(1) doesn't know
 # about, used by strip_macls_only_options() below to make the plain-ls
 # fallback actually work instead of erroring out on them.
-MACLS_ONLY_LONG_OPTS = tuple(name for name, *_ in MODE_OPTIONS) + ("--quote", "--group-directories-first", "--stripe", "--base-fg", "--scale", "--no-sips", "--ql-ext")
+MACLS_ONLY_LONG_OPTS = tuple(name for name, *_ in MODE_OPTIONS) + ("--quote", "--group-directories-first", "--stripe", "--base-fg", "--scale", "--no-thumb-shrink", "--ql-ext")
 
 
 def strip_macls_only_options(argv):
@@ -3812,13 +3922,15 @@ def parse_options(argv):
             opts.stripe = True
             i += 1
             continue
-        if arg == "--no-sips":
-            # Undocumented escape hatch: skips _sips_shrink_image()
-            # entirely, sending -I thumbnails at their original
+        if arg == "--no-thumb-shrink":
+            # Undocumented escape hatch: skips _shrink_image_external()
+            # entirely (sips and its magick(1)/convert(1) fallback
+            # alike), sending -I thumbnails at their original
             # resolution again (the pre-sips behavior). Exists for
-            # comparing/debugging sips's own effect on thumbnail speed
-            # and quality, not for end users -- see SIPS_RESIZE_THRESHOLD_BYTES.
-            opts.no_sips = True
+            # comparing/debugging that shrinking's own effect on
+            # thumbnail speed and quality, not for end users -- see
+            # SIPS_RESIZE_THRESHOLD_BYTES.
+            opts.no_thumb_shrink = True
             i += 1
             continue
         if arg == "--base-fg" or arg.startswith("--base-fg="):
