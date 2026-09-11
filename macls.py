@@ -2425,16 +2425,25 @@ def compute_multi_column_layout(namelen, plainlen, opt_f, opt_columns, width, st
                 if isinstance(v, int):
                     is_last = c + span[v] - 1 >= effective_last
                     w = cellwidth[v] if (is_last and not stripe_active) else occupied[v]
+                    if is_last and w > width:
+                        # Unavoidable overflow from the row's own last
+                        # entry alone -- same as an overlong word in
+                        # wrapped text -- so it's left out of the
+                        # budget; the rest of the row still has to fit.
+                        # This exception is deliberately narrow: it must
+                        # NOT apply to a non-last cell, or a terminal too
+                        # narrow even for the widest normal column (e.g.
+                        # names a couple of characters wider than the
+                        # terminal) would have every cell excused from
+                        # the budget, leaving every row's total at 0 and
+                        # grid_fits() wrongly reporting a fit for grids
+                        # that overflow once actually rendered.
+                        continue
                 elif v is None and stripe_active and any(isinstance(x, int) for x in col):
                     w = base_colwidth
                 else:
                     continue
-                if w <= width:
-                    total += w
-                # else: unavoidable overflow from this one cell alone --
-                # same as an overlong word in wrapped text -- so it's
-                # left out of the budget; the rest of the row still has
-                # to fit.
+                total += w
             if total > width:
                 return False
         return True
