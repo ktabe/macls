@@ -2291,6 +2291,18 @@ def compute_multi_column_layout(namelen, plainlen, opt_f, opt_columns, width, st
 
     def classic_layout():
         rows, cols, colwidth = compute_classic(width)
+        # cols == 1 with colwidth > width means even one column of this
+        # width doesn't fit -- the widest name alone overflows the
+        # terminal, so real ls just lets that one row wrap. Capping
+        # colwidth here to width doesn't change that (its own row still
+        # gets no padding -- see render_multi_column_layout()'s
+        # negative-width padding() no-op), but it stops --stripe's
+        # full-row tint (padding every *other*, shorter row out to
+        # colwidth to read as one banded block) from padding every one
+        # of those shorter rows out past the terminal width too, which
+        # would otherwise wrap every entry to two lines just because one
+        # unrelated name happens to be that long.
+        colwidth = min(colwidth, width)
         col_of_idx = [idx // rows for idx in range(n)]
         return {
             "mode": "classic",
