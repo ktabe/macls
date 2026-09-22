@@ -3978,7 +3978,7 @@ def parse_options(argv):
             opts.ql_ext_mode, opts.ql_ext_extra = parsed
             i += 1
             continue
-        if arg != "-1" and len(arg) > 1 and arg[1:].isdigit():
+        if arg.startswith("-") and arg != "-1" and len(arg) > 1 and arg[1:].isdigit():
             # -N shorthand for --scale=N (see --scale above), for any N
             # other than 1: "-1" itself already means single-column
             # output (opts.one, in the per-character loop below) and
