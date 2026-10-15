@@ -2034,9 +2034,15 @@ def splice_colored_name(name, line, colored, surround_sgr=None, is_tty=False, op
         return f"\033[{surround_sgr}m{s}\033[0m"
 
     n = len(name)
-    if len(line) >= n and line[-n:] == name:
-        return wrap(line[: len(line) - n]) + colored, True
 
+    # The symlink "name -> target" form has to be tried BEFORE the
+    # plain trailing-name match below: a symlink whose target happens to
+    # end with its own name (e.g. "Dropbox -> .../CloudStorage/Dropbox",
+    # or any "foo -> ../foo") would otherwise satisfy the trailing-name
+    # check, splicing colored over the TARGET's last path component and
+    # leaving the real name uncolored. The reverse can't misfire: a
+    # non-symlink line never contains name + " -> " (" -> " can only
+    # appear inside the name itself, never after it).
     marker = name + " -> "
     last = -1
     search_from = 0
@@ -2058,6 +2064,9 @@ def splice_colored_name(name, line, colored, surround_sgr=None, is_tty=False, op
                 target = sanitize_display_name(target)
             rest_after_name = arrow + target
         return wrap(prefix) + colored + wrap(rest_after_name), True
+
+    if len(line) >= n and line[-n:] == name:
+        return wrap(line[: len(line) - n]) + colored, True
 
     return wrap(line), False
 
